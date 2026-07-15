@@ -211,6 +211,8 @@ class PixelPainter {
     '.WWWWWWWW.',
   ];
 
+  // ─── Star (8×8 golden star) ──────────────────────────────────────────
+
   static void drawCloud(
     Canvas canvas,
     Offset position,
@@ -218,5 +220,99 @@ class PixelPainter {
   ) {
     final ps = 8.0 * scale;
     _drawPattern(canvas, position, _cloudPixels, ps);
+  }
+
+  static const List<String> _starPixels = [
+    '...YY...',
+    '...YY...',
+    '.YYYYYY.',
+    'YYYYYYYY',
+    '.YYYYYY.',
+    '..YY.YY.',
+    '.YY...YY',
+    'YY.....Y',
+  ];
+
+  static void drawStar(
+    Canvas canvas,
+    Offset position,
+    double scale, {
+    int alpha = 255,
+  }) {
+    final ps = 3.0 * scale;
+    _drawPattern(canvas, position, _starPixels, ps, alpha: alpha);
+  }
+
+  // ─── Red Mushroom (10×10) ────────────────────────────────────────────
+
+  static const List<String> _mushroomPixels = [
+    '...RRRR...',
+    '..RRRRRR..',
+    '.RRWWRRRR.',
+    '.RWWWRRRRR',
+    'RRWWWRRRRR',
+    'RRWWRRRRRR',
+    '.RRRRRRRR.',
+    '..TTTTTT..',
+    '.TTTTTTTT.',
+    '..TTTTTT..',
+  ];
+
+  static void drawMushroom(
+    Canvas canvas,
+    Offset position,
+    double scale, {
+    int alpha = 255,
+  }) {
+    final ps = 3.0 * scale;
+    _drawPattern(canvas, position, _mushroomPixels, ps, alpha: alpha);
+  }
+
+  // ─── Speed Boots (8×8 blue boots) ────────────────────────────────────
+
+  static const List<String> _bootsPixels = [
+    '..DDDD..',
+    '.DDDDDD.',
+    '.DDDDDD.',
+    'DDDDDDDB',
+    'DDDDDDDB',
+    '.DDDDDB.',
+    '..KKKK..',
+    '.KK..KK.',
+  ];
+
+  static void drawBoots(
+    Canvas canvas,
+    Offset position,
+    double scale, {
+    int alpha = 255,
+  }) {
+    final ps = 3.0 * scale;
+    _drawPattern(canvas, position, _bootsPixels, ps, alpha: alpha);
+  }
+
+  // ─── Invincibility effect ring (10×10 golden ring) ───────────────────
+
+  static const List<String> _invincRingPixels = [
+    '...YYYY...',
+    '..YY..YY..',
+    '.YY....YY.',
+    'YY......YY',
+    'YY......YY',
+    'YY......YY',
+    'YY......YY',
+    '.YY....YY.',
+    '..YY..YY..',
+    '...YYYY...',
+  ];
+
+  static void drawInvincRing(
+    Canvas canvas,
+    Offset position,
+    double scale, {
+    int alpha = 255,
+  }) {
+    final ps = 3.0 * scale;
+    _drawPattern(canvas, position, _invincRingPixels, ps, alpha: alpha);
   }
 }

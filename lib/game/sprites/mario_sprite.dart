@@ -26,6 +26,11 @@ class MarioSprite extends PositionComponent with HasGameReference {
   // Platform support
   double? _platformGroundY; // When set, Mario stands on this Y instead of _groundY
 
+  // Invincibility visual state
+  bool isInvincible = false;
+  double _invincBlinkTimer = 0;
+  bool _invincVisible = true;
+
   MarioSprite({required double groundY}) {
     _groundY = groundY;
     size = Vector2(60, 64);
@@ -79,6 +84,12 @@ class MarioSprite extends PositionComponent with HasGameReference {
         _visible = true;
       }
     }
+
+    // Invincibility blink (overrides hurt blink for visibility)
+    if (isInvincible) {
+      _invincBlinkTimer += dt;
+      _invincVisible = (sin(_invincBlinkTimer * 8) > -0.3);
+    }
   }
 
   @override
@@ -87,7 +98,7 @@ class MarioSprite extends PositionComponent with HasGameReference {
     if (state == MarioState.dead) return;
 
     // Draw shadow under Mario
-    final shadowPaint = Paint()..color = Colors.black.withValues(alpha: 0.2);
+    final shadowPaint = Paint()..color = Colors.black.withAlpha(50);
     canvas.drawOval(
       Rect.fromCenter(
         center: Offset(size.x / 2, size.y - 2),
@@ -96,6 +107,22 @@ class MarioSprite extends PositionComponent with HasGameReference {
       ),
       shadowPaint,
     );
+
+    // Invincibility golden glow effect
+    if (isInvincible && _invincVisible) {
+      final glowAlpha = (120 + 80 * sin(_invincBlinkTimer * 10)).round().clamp(0, 255);
+      final glowPaint = Paint()
+        ..color = Color.fromARGB(glowAlpha, 255, 215, 0) // gold
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8);
+      canvas.drawOval(
+        Rect.fromCenter(
+          center: Offset(size.x / 2, size.y / 2),
+          width: 56,
+          height: 60,
+        ),
+        glowPaint,
+      );
+    }
 
     PixelPainter.drawMario(
       canvas,
@@ -133,6 +160,42 @@ class MarioSprite extends PositionComponent with HasGameReference {
   /// Update the platform ground Y (called by game each frame while on platform).
   void updatePlatformGround(double? y) {
     _platformGroundY = y;
+  }
+
+  /// Update the dynamic terrain ground Y each frame.
+  /// When Mario is running on ground (not on a platform), his ground level
+  /// follows the terrain. Handles up-steps (auto-climb) and down-steps (fall).
+  void updateDynamicGround(double terrainGroundY) {
+    if (_platformGroundY != null) return; // on a platform, ignore terrain
+
+    if (state != MarioState.jumping) {
+      final prevGround = _groundY;
+      _groundY = terrainGroundY;
+
+      // Going downhill: Mario needs to "fall" to the new ground
+      if (terrainGroundY > prevGround + 5 && position.y < terrainGroundY - 2) {
+        state = MarioState.jumping;
+        _jumpVelocity = 50; // gentle downward
+      }
+      // Going uphill: snap Mario to new ground
+      else {
+        position.y = terrainGroundY;
+      }
+    } else {
+      // While jumping, still update ground for landing
+      _groundY = terrainGroundY;
+    }
+  }
+
+  /// Set or clear invincibility state.
+  void setInvincible(bool active) {
+    isInvincible = active;
+    if (active) {
+      _invincBlinkTimer = 0;
+      _invincVisible = true;
+    } else {
+      _invincVisible = true;
+    }
   }
 
   /// Mario falls off the platform (when platform scrolls past).

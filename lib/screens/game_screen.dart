@@ -82,11 +82,11 @@ class _OnScreenKeyboard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final screenWidth = MediaQuery.of(context).size.width;
-    const marginUnits = 2.0;
+    const marginUnits = 3.0;
     const spaceUnits = 2.0;
     const letterCount = 26;
-    // left margin(1) + 13 + space(2) + 13 + right margin(1) = 30 units
-    const totalLayoutUnits = marginUnits * 2 + letterCount + spaceUnits; // 30
+    // left margin(3) + 13 + space(2) + 13 + right margin(3) = 34 units
+    const totalLayoutUnits = marginUnits * 2 + letterCount + spaceUnits; // 34
 
     final unitWidth = screenWidth / totalLayoutUnits;
     final btnHeight = unitWidth * 0.72;

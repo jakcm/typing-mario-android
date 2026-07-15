@@ -6,17 +6,19 @@ import 'package:flutter/services.dart';
 import 'components/scrolling_background.dart';
 import 'components/hud.dart';
 import 'components/coin_effect.dart';
+import 'core/terrain_system.dart';
 import 'sprites/mario_sprite.dart';
 import 'sprites/obstacle_sprite.dart';
 import 'sprites/floating_coin.dart';
 import 'sprites/platform_sprite.dart';
 import 'sprites/gap_sprite.dart';
+import 'sprites/powerup_sprite.dart';
 import 'core/letter_target.dart';
 import '../utils/audio_manager.dart';
 
 /// Main game class for Typing Mario.
-/// An auto-runner where obstacles, coins, platforms, and gaps appear with
-/// letters; the player types letters to interact with them.
+/// An auto-runner where obstacles, coins, platforms, gaps, and power-ups appear
+/// with letters; the player types letters to interact with them.
 class TypingMarioGame extends FlameGame with KeyboardEvents {
   final void Function(int score)? onGameOver;
 
@@ -37,6 +39,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
   // Components
   late MarioSprite _mario;
   late HudComponent _hud;
+  late TerrainSystem _terrain;
   ScrollingBackground? _background;
   final AudioManager _audio = AudioManager();
   final Random _rng = Random();
@@ -51,11 +54,13 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
   double _coinTimer = 0;
   double _platformTimer = 0;
   double _gapTimer = 0;
+  double _powerUpTimer = 0;
 
   static const double _obstacleDelay = 2.0;
   static const double _coinDelay = 6.0;
   static const double _platformDelay = 10.0;
   static const double _gapDelay = 14.0;
+  static const double _powerUpDelay = 18.0; // 18-28s between power-ups
 
   // Screen dimensions (cached)
   late double _screenW;
@@ -65,6 +70,14 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
 
   // Active platform Mario is standing on (null = on ground)
   PlatformSprite? _activePlatform;
+
+  // ─── Power-up / effect timers ─────────────────────────────────────────
+  double _invincibleTimer = 0; // seconds remaining
+  double _slowTimer = 0; // seconds remaining
+
+  // ─── Theme tracking ──────────────────────────────────────────────────
+  int _lastThemeScore = 0; // score at last theme switch
+  static const int _themeScoreInterval = 100; // switch every 100 points
 
   // ─── Letter pool management ──────────────────────────────────────────
 
@@ -92,8 +105,12 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     _screenW = size.x;
     _groundY = size.y * 0.78;
 
-    // Background
-    _background = ScrollingBackground();
+    // Terrain system
+    _terrain = TerrainSystem(baseGroundY: _groundY, screenHeight: size.y);
+    _terrain.init(_screenW);
+
+    // Background (now needs terrain reference)
+    _background = ScrollingBackground(terrainSystem: _terrain);
     add(_background!);
 
     // Mario
@@ -116,6 +133,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     _coinTimer = 3.0;
     _platformTimer = 5.0;
     _gapTimer = 8.0;
+    _powerUpTimer = 12.0;
 
     // Camera base position
     _cameraBase = camera.viewfinder.position.clone();
@@ -126,13 +144,48 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     super.update(dt);
     if (isGameOver || isPaused) return;
 
-    // Keep BGM alive even if Android audio focus/SFX/TTS interrupts it.
+    // Keep BGM alive
     _audio.ensureBgmPlaying();
 
     // Screen shake
     _updateShake(dt);
 
-    // ─── Spawn timers ────────────────────────────────────────────────────
+    // ─── Terrain system ─────────────────────────────────────────────────
+    _terrain.update(dt, gameSpeed);
+
+    // Update Mario's ground Y based on terrain at his position
+    final marioTerrainY = _terrain.getGroundYAt(_mario.position.x);
+    _mario.updateDynamicGround(marioTerrainY);
+    _groundY = marioTerrainY; // update for spawning reference
+
+    // ─── Effect timers ──────────────────────────────────────────────────
+    if (_invincibleTimer > 0) {
+      _invincibleTimer -= dt;
+      if (_invincibleTimer <= 0) {
+        _invincibleTimer = 0;
+        _mario.setInvincible(false);
+      }
+    }
+    if (_slowTimer > 0) {
+      _slowTimer -= dt;
+      if (_slowTimer <= 0) {
+        _slowTimer = 0;
+      }
+    }
+
+    // ─── Theme switching by score ───────────────────────────────────────
+    if (score - _lastThemeScore >= _themeScoreInterval) {
+      _lastThemeScore = score;
+      _background!.switchTheme(_background!.getNextTheme());
+    }
+
+    // ─── Update HUD power-up timers ────────────────────────────────────
+    _hud.setPowerUpTimers(
+      invincible: _invincibleTimer,
+      slow: _slowTimer,
+    );
+
+    // ─── Spawn timers ───────────────────────────────────────────────────
     // Obstacles: always ensure at least one is active
     _obstacleTimer -= dt;
     if (_obstacleTimer <= 0 && _countType<ObstacleSprite>() == 0) {
@@ -159,6 +212,13 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     if (_gapTimer <= 0) {
       _spawnGap();
       _gapTimer = _gapDelay + _rng.nextDouble() * 5;
+    }
+
+    // Power-ups
+    _powerUpTimer -= dt;
+    if (_powerUpTimer <= 0) {
+      _spawnPowerUp();
+      _powerUpTimer = _powerUpDelay + _rng.nextDouble() * 10;
     }
 
     // ─── Collision detection ────────────────────────────────────────────
@@ -191,10 +251,11 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     if (isGameOver) return;
 
     final letter = _pickAvailableLetter();
+    final obsGroundY = _terrain.getGroundYAt(_screenW + 20);
     final obstacle = ObstacleSprite(
       letter: letter,
-      speed: gameSpeed,
-      groundY: _groundY,
+      speed: _effectiveSpeed(gameSpeed),
+      groundY: obsGroundY,
       startX: _screenW + 20,
     );
     add(obstacle);
@@ -206,10 +267,11 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
 
   void _spawnCoin() {
     final letter = _pickAvailableLetter();
+    final coinGroundY = _terrain.getGroundYAt(_screenW + 20);
     final coin = FloatingCoinSprite(
       letter: letter,
-      speed: gameSpeed * 0.8,
-      groundY: _groundY,
+      speed: _effectiveSpeed(gameSpeed * 0.8),
+      groundY: coinGroundY,
       startX: _screenW + 20,
     );
     add(coin);
@@ -218,12 +280,25 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
 
   void _spawnPlatform() {
     final letter = _pickAvailableLetter();
+    final platGroundY = _terrain.getGroundYAt(_screenW + 20);
+
+    // Multi-layer: weighted random selection
+    final layerRoll = _rng.nextDouble();
+    final layer = layerRoll < 0.6 ? 1 : (layerRoll < 0.9 ? 2 : 3);
+
+    // 25% chance of moving platform
+    final isMoving = _rng.nextDouble() < 0.25;
+
     final platform = PlatformSprite(
       letter: letter,
-      speed: gameSpeed * 0.9,
-      groundY: _groundY,
+      speed: _effectiveSpeed(gameSpeed * 0.9),
+      groundY: platGroundY,
       startX: _screenW + 20,
       blockCount: 3 + _rng.nextInt(3), // 3-5 blocks
+      layer: layer,
+      isMoving: isMoving,
+      moveRange: 30 + _rng.nextDouble() * 20,
+      moveSpeed: 1.0 + _rng.nextDouble() * 1.0,
     );
     add(platform);
     _activeTargets.add(platform);
@@ -231,15 +306,43 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
 
   void _spawnGap() {
     final letter = _pickAvailableLetter();
+    final gapGroundY = _terrain.getGroundYAt(_screenW + 20);
     final gap = GapSprite(
       letter: letter,
-      speed: gameSpeed,
-      groundY: _groundY,
+      speed: _effectiveSpeed(gameSpeed),
+      groundY: gapGroundY,
       startX: _screenW + 20,
       screenHeight: size.y,
     );
     add(gap);
     _activeTargets.add(gap);
+  }
+
+  void _spawnPowerUp() {
+    if (isGameOver) return;
+    if (_countType<PowerUpSprite>() >= 1) return; // max 1 on screen
+
+    final letter = _pickAvailableLetter();
+    final puGroundY = _terrain.getGroundYAt(_screenW + 20);
+
+    // Random type selection
+    final types = PowerUpType.values;
+    final type = types[_rng.nextInt(types.length)];
+
+    final powerUp = PowerUpSprite(
+      letter: letter,
+      speed: _effectiveSpeed(gameSpeed * 0.75),
+      groundY: puGroundY,
+      startX: _screenW + 20,
+      type: type,
+    );
+    add(powerUp);
+    _activeTargets.add(powerUp);
+  }
+
+  /// Get effective speed accounting for slow effect.
+  double _effectiveSpeed(double baseSpeed) {
+    return _slowTimer > 0 ? baseSpeed * 0.5 : baseSpeed;
   }
 
   // ─── Input handling ───────────────────────────────────────────────────
@@ -283,16 +386,19 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     if (isGameOver) return;
     final upper = letter.toUpperCase();
 
-    // Find matching target (priority: obstacles > coins > platforms > gaps)
+    // Find matching target (priority: obstacles > power-ups > coins > platforms > gaps)
     LetterTarget? match;
     for (final target in _activeTargets) {
       if (target.isConsumed) continue;
-      // Skip platforms that were already used (letter already triggered)
       if (target is PlatformSprite && target.isUsed) continue;
       if (target.letter.toUpperCase() == upper) {
         if (target is ObstacleSprite) {
           match = target;
           break; // Obstacles have highest priority
+        }
+        if (target is PowerUpSprite) {
+          match = target;
+          break; // Power-ups second priority (urgent to collect)
         }
         match ??= target;
       }
@@ -325,6 +431,8 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
       _handlePlatformJumped(target);
     } else if (target is GapSprite) {
       _handleGapCleared(target);
+    } else if (target is PowerUpSprite) {
+      _handlePowerUpCollected(target);
     }
 
     _correctStreak++;
@@ -358,7 +466,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     );
 
     // Immediately spawn next obstacle
-    _obstacleTimer = 0.5; // tiny delay for the death animation
+    _obstacleTimer = 0.5;
   }
 
   void _handleCoinCollected(FloatingCoinSprite coin) {
@@ -389,6 +497,45 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     _mario.jump();
     _audio.playJumpSound();
     score += 5;
+    _hud.setScore(score);
+  }
+
+  void _handlePowerUpCollected(PowerUpSprite powerUp) {
+    _audio.playPowerUpSound();
+
+    switch (powerUp.type) {
+      case PowerUpType.star:
+        // 10 seconds of invincibility
+        _invincibleTimer = 10.0;
+        _mario.setInvincible(true);
+        break;
+      case PowerUpType.mushroom:
+        // Extra life
+        lives++;
+        _hud.setLives(lives);
+        _audio.playOneUpSound();
+        break;
+      case PowerUpType.coinRain:
+        // Batch score
+        score += 50;
+        _hud.setScore(score);
+        // Triple coin effect
+        for (int i = 0; i < 3; i++) {
+          add(CoinEffect(
+            position: Vector2(
+              powerUp.position.x + _rng.nextDouble() * 40 - 20,
+              powerUp.position.y - 30 - _rng.nextDouble() * 30,
+            ),
+          ));
+        }
+        break;
+      case PowerUpType.speedBoots:
+        // 8 seconds slow obstacles
+        _slowTimer = 8.0;
+        break;
+    }
+
+    score += 20; // bonus for collecting any power-up
     _hud.setScore(score);
   }
 
@@ -425,11 +572,29 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
         _releaseLetter(target.letter);
       }
 
-      // Check obstacle collision with Mario (damage)
+      // Check power-up collision with Mario (jump to collect)
+      if (target is PowerUpSprite && target.collidesWith(marioRect)) {
+        target.onLetterMatched();
+        _handlePowerUpCollected(target);
+        _releaseLetter(target.letter);
+      }
+
+      // Check obstacle collision with Mario (damage or invincibility destroy)
       if (target is ObstacleSprite && !target.isDestroyed) {
         if (target.collidesWith(marioRect) && !target.hasPassedMario) {
           target.hasPassedMario = true;
-          _onObstacleHitMario(target);
+
+          if (_invincibleTimer > 0) {
+            // Invincible: destroy obstacle without taking damage
+            target.destroy();
+            _releaseLetter(target.letter);
+            score += 15;
+            _hud.setScore(score);
+            _audio.playStompSound();
+            _obstacleTimer = 0.5;
+          } else {
+            _onObstacleHitMario(target);
+          }
         }
       }
 
@@ -474,11 +639,9 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
       // Remove consumed targets that have finished their animation
       if (target.isConsumed) {
         if (target.parent == null) {
-          // Already removed from scene
           toRemove.add(target);
           _releaseLetter(target.letter);
         } else if (target is ObstacleSprite && target.isDestroyed) {
-          // Wait for death animation
           if (target.parent == null) {
             toRemove.add(target);
             _releaseLetter(target.letter);
