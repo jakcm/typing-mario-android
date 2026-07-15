@@ -6,10 +6,11 @@ import '../core/letter_target.dart';
 /// Pressing the letter makes Mario jump over the gap to the landing brick.
 /// If NOT pressed, the gap passes under Mario with a bump effect (no life loss).
 class GapSprite extends LetterTarget {
-  String _activeLetter;
+  final String _activeLetter;
   final double speed;
   bool _consumed = false;
   bool _missTriggered = false;
+  bool _letterHidden = false; // Controls letter display, preserves original for cleanup
   static const double gapWidth = 120.0;
   static const double brickSize = 32.0;
 
@@ -26,7 +27,7 @@ class GapSprite extends LetterTarget {
     required double groundY,
     required double startX,
     required double screenHeight,
-  })  : _activeLetter = letter {
+  }) : _activeLetter = letter {
     // Component covers the gap hole + landing brick at ground level
     final groundDepth = screenHeight - groundY;
     size = Vector2(gapWidth + brickSize, groundDepth);
@@ -46,14 +47,14 @@ class GapSprite extends LetterTarget {
   void markMissed() {
     _missTriggered = true;
     _consumed = true;
-    _activeLetter = '';
+    _letterHidden = true;
   }
 
   @override
   void onLetterMatched() {
     if (_consumed) return;
     _consumed = true;
-    _activeLetter = '';
+    _letterHidden = true;
   }
 
   @override
@@ -115,8 +116,8 @@ class GapSprite extends LetterTarget {
     // ─── Landing brick (right side of gap, at ground surface) ─────────
     _drawBrick(canvas, Offset(gapWidth, 0), brickSize);
 
-    // Letter on the brick
-    if (!_consumed) {
+    // Letter on the brick (only if not yet used/missed)
+    if (!_letterHidden) {
       final letterPaint = TextPainter(
         text: TextSpan(
           text: _activeLetter.toUpperCase(),
