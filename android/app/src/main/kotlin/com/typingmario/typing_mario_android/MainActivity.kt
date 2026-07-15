@@ -1,0 +1,5 @@
+package com.typingmario.typing_mario_android
+
+import io.flutter.embedding.android.FlutterActivity
+
+class MainActivity : FlutterActivity()
