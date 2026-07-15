@@ -26,6 +26,7 @@ class AudioManager {
   final FlutterTts _tts = FlutterTts();
   final AudioPlayer _sfxPlayer = AudioPlayer(playerId: 'sfx');
   final AudioPlayer _sfxPlayer2 = AudioPlayer(playerId: 'sfx2');
+  final AudioPlayer _bgmPlayer = AudioPlayer(playerId: 'bgm');
   bool _initialized = false;
   bool _ttsReady = false;
 
@@ -42,14 +43,48 @@ class AudioManager {
   String? _oneUpPath;
   String? _bumpPath;
   String? _pipePath;
+  String? _bgmPath;
+  bool _bgmShouldPlay =
+      false; // Watchdog flag: keep BGM alive while game is running
+  bool _bgmRestarting = false; // Avoid overlapping async restarts
+  double _lastBgmRepairAt = 0; // Seconds since epoch, simple throttle
+
+  static final AudioContext _gameAudioContext = AudioContext(
+    android: const AudioContextAndroid(
+      audioFocus: AndroidAudioFocus.none,
+      contentType: AndroidContentType.sonification,
+      usageType: AndroidUsageType.game,
+    ),
+    iOS: AudioContextIOS(category: AVAudioSessionCategory.ambient),
+  );
 
   static const Map<String, String> letterWords = {
-    'A': 'Apple', 'B': 'Ball', 'C': 'Cat', 'D': 'Dog', 'E': 'Egg',
-    'F': 'Fish', 'G': 'Goat', 'H': 'Hat', 'I': 'Ice cream', 'J': 'Jump',
-    'K': 'Kite', 'L': 'Lion', 'M': 'Moon', 'N': 'Nest', 'O': 'Orange',
-    'P': 'Pig', 'Q': 'Queen', 'R': 'Rain', 'S': 'Sun', 'T': 'Tree',
-    'U': 'Umbrella', 'V': 'Van', 'W': 'Water', 'X': 'Xylophone',
-    'Y': 'Yellow', 'Z': 'Zoo',
+    'A': 'Apple',
+    'B': 'Ball',
+    'C': 'Cat',
+    'D': 'Dog',
+    'E': 'Egg',
+    'F': 'Fish',
+    'G': 'Goat',
+    'H': 'Hat',
+    'I': 'Ice cream',
+    'J': 'Jump',
+    'K': 'Kite',
+    'L': 'Lion',
+    'M': 'Moon',
+    'N': 'Nest',
+    'O': 'Orange',
+    'P': 'Pig',
+    'Q': 'Queen',
+    'R': 'Rain',
+    'S': 'Sun',
+    'T': 'Tree',
+    'U': 'Umbrella',
+    'V': 'Van',
+    'W': 'Water',
+    'X': 'Xylophone',
+    'Y': 'Yellow',
+    'Z': 'Zoo',
   };
 
   // ─── Note frequencies (Hz) ─────────────────────────────────────────────
@@ -81,6 +116,22 @@ class AudioManager {
     if (_initialized) return;
     _initialized = true;
 
+    // ─── Critical: Configure global audio context ──────────────────────
+    // Set audioFocus to none so SFX players won't steal focus from BGM.
+    // Default is AndroidAudioFocus.gain which pauses other players.
+    try {
+      await AudioPlayer.global.setAudioContext(_gameAudioContext);
+      await _bgmPlayer.setAudioContext(_gameAudioContext);
+      await _sfxPlayer.setAudioContext(_gameAudioContext);
+      await _sfxPlayer2.setAudioContext(_gameAudioContext);
+    } catch (_) {}
+
+    // Set SFX players to low latency mode (SoundPool, not MediaPlayer)
+    try {
+      await _sfxPlayer.setPlayerMode(PlayerMode.lowLatency);
+      await _sfxPlayer2.setPlayerMode(PlayerMode.lowLatency);
+    } catch (_) {}
+
     // Initialize TTS
     try {
       await _tts.setLanguage('en-US');
@@ -106,6 +157,13 @@ class AudioManager {
     } catch (_) {
       // Sound generation failed - game still works without sounds
     }
+
+    // Generate BGM
+    try {
+      _bgmPath = await _generateFile(_buildBgm(), 'bgm.wav');
+    } catch (_) {
+      // BGM generation failed — game still works without music
+    }
   }
 
   // ─── WAV builder ──────────────────────────────────────────────────────
@@ -120,22 +178,38 @@ class AudioManager {
     final bd = ByteData.view(bytes.buffer);
 
     // RIFF header
-    bd.setUint8(0, 0x52); bd.setUint8(1, 0x49); bd.setUint8(2, 0x46); bd.setUint8(3, 0x46);
+    bd.setUint8(0, 0x52);
+    bd.setUint8(1, 0x49);
+    bd.setUint8(2, 0x46);
+    bd.setUint8(3, 0x46);
     bd.setUint32(4, 36 + dataSize, Endian.little);
-    bd.setUint8(8, 0x57); bd.setUint8(9, 0x41); bd.setUint8(10, 0x56); bd.setUint8(11, 0x45);
+    bd.setUint8(8, 0x57);
+    bd.setUint8(9, 0x41);
+    bd.setUint8(10, 0x56);
+    bd.setUint8(11, 0x45);
 
     // fmt chunk
-    bd.setUint8(12, 0x66); bd.setUint8(13, 0x6d); bd.setUint8(14, 0x74); bd.setUint8(15, 0x20);
+    bd.setUint8(12, 0x66);
+    bd.setUint8(13, 0x6d);
+    bd.setUint8(14, 0x74);
+    bd.setUint8(15, 0x20);
     bd.setUint32(16, 16, Endian.little);
     bd.setUint16(20, 1, Endian.little);
     bd.setUint16(22, numChannels, Endian.little);
     bd.setUint32(24, sampleRate, Endian.little);
-    bd.setUint32(28, sampleRate * numChannels * (bitsPerSample ~/ 8), Endian.little);
+    bd.setUint32(
+      28,
+      sampleRate * numChannels * (bitsPerSample ~/ 8),
+      Endian.little,
+    );
     bd.setUint16(32, numChannels * (bitsPerSample ~/ 8), Endian.little);
     bd.setUint16(34, bitsPerSample, Endian.little);
 
     // data chunk
-    bd.setUint8(36, 0x64); bd.setUint8(37, 0x61); bd.setUint8(38, 0x74); bd.setUint8(39, 0x61);
+    bd.setUint8(36, 0x64);
+    bd.setUint8(37, 0x61);
+    bd.setUint8(38, 0x74);
+    bd.setUint8(39, 0x61);
     bd.setUint32(40, dataSize, Endian.little);
 
     for (int i = 0; i < samples.length; i++) {
@@ -191,7 +265,9 @@ class AudioManager {
 
   Float32List _concat(List<Float32List> segments) {
     int total = 0;
-    for (final s in segments) { total += s.length; }
+    for (final s in segments) {
+      total += s.length;
+    }
     final result = Float32List(total);
     int offset = 0;
     for (final s in segments) {
@@ -211,38 +287,82 @@ class AudioManager {
 
   Float32List _buildCoin() {
     return _concat([
-      _squareWave(freq: _B5, durationMs: 80, volume: 0.5, attackMs: 1, decayMs: 5, sustainLevel: 0.8, releaseMs: 15),
+      _squareWave(
+        freq: _B5,
+        durationMs: 80,
+        volume: 0.5,
+        attackMs: 1,
+        decayMs: 5,
+        sustainLevel: 0.8,
+        releaseMs: 15,
+      ),
       _silence(5),
-      _squareWave(freq: _e6, durationMs: 380, volume: 0.5, attackMs: 1, decayMs: 10, sustainLevel: 0.8, releaseMs: 80),
+      _squareWave(
+        freq: _e6,
+        durationMs: 380,
+        volume: 0.5,
+        attackMs: 1,
+        decayMs: 10,
+        sustainLevel: 0.8,
+        releaseMs: 80,
+      ),
     ]);
   }
 
   Float32List _buildJump() {
     final notes = [
-      [_D5, 15], [_Cs5, 10],
-      [_Ds5, 12], [_E5, 12], [_F5, 12], [_Fs5, 12],
-      [_G5, 12], [_Gs5, 12], [_A5, 12], [_As5, 12],
-      [_B5, 12], [_C6, 12], [_Cs6, 12], [_d6, 100],
+      [_D5, 15],
+      [_Cs5, 10],
+      [_Ds5, 12],
+      [_E5, 12],
+      [_F5, 12],
+      [_Fs5, 12],
+      [_G5, 12],
+      [_Gs5, 12],
+      [_A5, 12],
+      [_As5, 12],
+      [_B5, 12],
+      [_C6, 12],
+      [_Cs6, 12],
+      [_d6, 100],
     ];
     final segments = <Float32List>[];
     for (final n in notes) {
-      segments.add(_squareWave(
-        freq: n[0] as double,
-        durationMs: n[1] as int,
-        volume: 0.35,
-        attackMs: 1,
-        decayMs: 3,
-        sustainLevel: 0.8,
-        releaseMs: 8,
-      ));
+      segments.add(
+        _squareWave(
+          freq: n[0] as double,
+          durationMs: n[1] as int,
+          volume: 0.35,
+          attackMs: 1,
+          decayMs: 3,
+          sustainLevel: 0.8,
+          releaseMs: 8,
+        ),
+      );
     }
     return _concat(segments);
   }
 
   Float32List _buildStomp() {
     return _concat([
-      _squareWave(freq: _B4, durationMs: 40, volume: 0.5, attackMs: 1, decayMs: 5, sustainLevel: 0.6, releaseMs: 30),
-      _squareWave(freq: _G4, durationMs: 60, volume: 0.4, attackMs: 1, decayMs: 5, sustainLevel: 0.5, releaseMs: 40),
+      _squareWave(
+        freq: _B4,
+        durationMs: 40,
+        volume: 0.5,
+        attackMs: 1,
+        decayMs: 5,
+        sustainLevel: 0.6,
+        releaseMs: 30,
+      ),
+      _squareWave(
+        freq: _G4,
+        durationMs: 60,
+        volume: 0.4,
+        attackMs: 1,
+        decayMs: 5,
+        sustainLevel: 0.5,
+        releaseMs: 40,
+      ),
     ]);
   }
 
@@ -253,10 +373,17 @@ class AudioManager {
     final v = 0.45;
 
     void addNote(double freq, int durMs) {
-      segments.add(_squareWave(
-        freq: freq, durationMs: durMs, volume: v,
-        attackMs: 2, decayMs: 10, sustainLevel: 0.7, releaseMs: 30,
-      ));
+      segments.add(
+        _squareWave(
+          freq: freq,
+          durationMs: durMs,
+          volume: v,
+          attackMs: 2,
+          decayMs: 10,
+          sustainLevel: 0.7,
+          releaseMs: 30,
+        ),
+      );
       segments.add(_silence(15));
     }
 
@@ -280,10 +407,17 @@ class AudioManager {
     final notes = [_C4 * 2, _E4 * 2, _G4 * 2, _C6, _e6, _g6, _C6 * 2];
     final segments = <Float32List>[];
     for (final f in notes) {
-      segments.add(_squareWave(
-        freq: f, durationMs: 50, volume: 0.4,
-        attackMs: 1, decayMs: 5, sustainLevel: 0.8, releaseMs: 10,
-      ));
+      segments.add(
+        _squareWave(
+          freq: f,
+          durationMs: 50,
+          volume: 0.4,
+          attackMs: 1,
+          decayMs: 5,
+          sustainLevel: 0.8,
+          releaseMs: 10,
+        ),
+      );
     }
     return _concat(segments);
   }
@@ -292,10 +426,17 @@ class AudioManager {
     final notes = [_E5, _G5, _e6, _C6, _d6, _g6];
     final segments = <Float32List>[];
     for (final f in notes) {
-      segments.add(_squareWave(
-        freq: f, durationMs: 60, volume: 0.4,
-        attackMs: 1, decayMs: 5, sustainLevel: 0.8, releaseMs: 15,
-      ));
+      segments.add(
+        _squareWave(
+          freq: f,
+          durationMs: 60,
+          volume: 0.4,
+          attackMs: 1,
+          decayMs: 5,
+          sustainLevel: 0.8,
+          releaseMs: 15,
+        ),
+      );
     }
     return _concat(segments);
   }
@@ -316,11 +457,86 @@ class AudioManager {
     final notes = [_B4, _As4, _A4, _Gs5, _G4];
     final segments = <Float32List>[];
     for (final f in notes) {
-      segments.add(_squareWave(
-        freq: f, durationMs: 60, volume: 0.4,
-        attackMs: 1, decayMs: 5, sustainLevel: 0.7, releaseMs: 20,
-      ));
+      segments.add(
+        _squareWave(
+          freq: f,
+          durationMs: 60,
+          volume: 0.4,
+          attackMs: 1,
+          decayMs: 5,
+          sustainLevel: 0.7,
+          releaseMs: 20,
+        ),
+      );
     }
+    return _concat(segments);
+  }
+
+  /// Build a short 8-bit game BGM loop (~7 seconds, 4-bar arpeggio pattern).
+  /// Pattern: C major ↑↓ → A minor ↑↓ → F major ↑↓ → G major ↑↓
+  Float32List _buildBgm() {
+    const eighth = 215; // ~140 BPM 8th note
+    final segments = <Float32List>[];
+    // Use lower volume for BGM so SFX can be heard
+    const v = 0.22;
+
+    void mel(double freq) {
+      segments.add(
+        _squareWave(
+          freq: freq,
+          durationMs: eighth,
+          volume: v,
+          attackMs: 1,
+          decayMs: 8,
+          sustainLevel: 0.65,
+          releaseMs: 12,
+        ),
+      );
+    }
+
+    // C5 = 523.25, F4 = 349.23
+    const c5 = 523.25, f4 = 349.23;
+
+    // Bar 1: C major arpeggio up then down
+    mel(c5);
+    mel(_E5);
+    mel(_G5);
+    mel(_C6);
+    mel(_G5);
+    mel(_E5);
+    mel(c5);
+    segments.add(_silence(eighth));
+
+    // Bar 2: A minor arpeggio up then down
+    mel(_A4);
+    mel(c5);
+    mel(_E5);
+    mel(_A5);
+    mel(_E5);
+    mel(c5);
+    mel(_A4);
+    segments.add(_silence(eighth));
+
+    // Bar 3: F major arpeggio up then down
+    mel(f4);
+    mel(_A4);
+    mel(c5);
+    mel(_F5);
+    mel(c5);
+    mel(_A4);
+    mel(f4);
+    segments.add(_silence(eighth));
+
+    // Bar 4: G major arpeggio up then down
+    mel(_G4);
+    mel(_B4);
+    mel(_D5);
+    mel(_G5);
+    mel(_D5);
+    mel(_B4);
+    mel(_G4);
+    segments.add(_silence(eighth));
+
     return _concat(segments);
   }
 
@@ -420,10 +636,88 @@ class AudioManager {
     _enqueueTts(phrases.first);
   }
 
+  // ─── BGM controls ──────────────────────────────────────────────────────
+
+  // BGM re-loop listener (backup for ReleaseMode.loop)
+  bool _bgmLoopRegistered = false;
+
+  void startBgm() {
+    _bgmShouldPlay = true;
+    _playBgmNow();
+
+    // Backup: if ReleaseMode.loop fails, manually restart on completion
+    if (!_bgmLoopRegistered) {
+      _bgmLoopRegistered = true;
+      _bgmPlayer.onPlayerComplete.listen((_) {
+        if (_bgmShouldPlay) _playBgmNow();
+      });
+      _bgmPlayer.onPlayerStateChanged.listen((state) {
+        if (_bgmShouldPlay &&
+            (state == PlayerState.paused ||
+                state == PlayerState.stopped ||
+                state == PlayerState.completed)) {
+          ensureBgmPlaying(force: true);
+        }
+      });
+    }
+  }
+
+  void _playBgmNow() {
+    if (_bgmPath == null) return;
+    try {
+      _bgmPlayer.setAudioContext(_gameAudioContext);
+      _bgmPlayer.setReleaseMode(ReleaseMode.loop);
+      _bgmPlayer.setVolume(0.3);
+      _bgmPlayer.play(DeviceFileSource(_bgmPath!));
+    } catch (_) {}
+  }
+
+  /// Watchdog: call this from the game loop. If Android audio focus or a sound
+  /// effect pauses/stops BGM, restart it while gameplay is active.
+  void ensureBgmPlaying({bool force = false}) {
+    if (!_bgmShouldPlay || _bgmPath == null || _bgmRestarting) return;
+
+    // Throttle unless forced: at most 4 checks/restarts per second.
+    final now = DateTime.now().millisecondsSinceEpoch / 1000.0;
+    if (!force && now - _lastBgmRepairAt < 0.25) return;
+    _lastBgmRepairAt = now;
+
+    if (force || _bgmPlayer.state != PlayerState.playing) {
+      _bgmRestarting = true;
+      try {
+        _playBgmNow();
+      } finally {
+        _bgmRestarting = false;
+      }
+    }
+  }
+
+  void stopBgm() {
+    _bgmShouldPlay = false;
+    _bgmPlayer.stop();
+  }
+
+  void pauseBgm() {
+    _bgmShouldPlay = false;
+    _bgmPlayer.pause();
+  }
+
+  void resumeBgm() {
+    _bgmShouldPlay = true;
+    _bgmPlayer.resume();
+    ensureBgmPlaying(force: true);
+  }
+
+  /// AudioManager is a process-wide singleton. Do NOT dispose AudioPlayer
+  /// instances between game sessions; otherwise Play Again / Main Menu will
+  /// reuse disposed players because _initialized remains true.
+  ///
+  /// This method intentionally only stops current playback/queues. It keeps the
+  /// underlying players alive for the next game session.
   void dispose() {
+    _bgmShouldPlay = false;
     _tts.stop();
     _ttsQueue.clear();
-    _sfxPlayer.dispose();
-    _sfxPlayer2.dispose();
+    _bgmPlayer.stop();
   }
 }

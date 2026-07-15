@@ -1,3 +1,4 @@
+import 'dart:math';
 import 'package:flame/components.dart';
 import 'package:flutter/material.dart';
 import '../../utils/pixel_painter.dart';
@@ -6,6 +7,9 @@ import '../../utils/pixel_painter.dart';
 enum MarioState { running, jumping, hurt, dead, idle }
 
 /// Mario sprite component drawn programmatically with pixel art.
+/// Supports platform landing: when on a platform, the platform's top Y
+/// acts as a temporary ground level. When the platform scrolls past,
+/// Mario falls back to the real ground.
 class MarioSprite extends PositionComponent with HasGameReference {
   MarioState state = MarioState.idle;
   int _frame = 0;
@@ -18,6 +22,9 @@ class MarioSprite extends PositionComponent with HasGameReference {
   static const double _gravity = 900;
   static const double _jumpForce = -420;
   static const double _frameInterval = 0.15;
+
+  // Platform support
+  double? _platformGroundY; // When set, Mario stands on this Y instead of _groundY
 
   MarioSprite({required double groundY}) {
     _groundY = groundY;
@@ -43,10 +50,19 @@ class MarioSprite extends PositionComponent with HasGameReference {
     if (state == MarioState.jumping) {
       _jumpVelocity += _gravity * dt;
       position.y += _jumpVelocity * dt;
-      if (position.y >= _groundY) {
+
+      // Check platform landing first (only when falling and platform is set)
+      if (_platformGroundY != null && _jumpVelocity > 0 && position.y >= _platformGroundY!) {
+        position.y = _platformGroundY!;
+        state = MarioState.running;
+        _jumpVelocity = 0;
+      }
+      // Check real ground landing
+      else if (position.y >= _groundY) {
         position.y = _groundY;
         state = MarioState.running;
         _jumpVelocity = 0;
+        _platformGroundY = null; // Clear platform when hitting real ground
       }
     }
 
@@ -70,8 +86,6 @@ class MarioSprite extends PositionComponent with HasGameReference {
     if (!_visible && state == MarioState.hurt) return;
     if (state == MarioState.dead) return;
 
-    final scale = 1.0;
-
     // Draw shadow under Mario
     final shadowPaint = Paint()..color = Colors.black.withValues(alpha: 0.2);
     canvas.drawOval(
@@ -86,7 +100,7 @@ class MarioSprite extends PositionComponent with HasGameReference {
     PixelPainter.drawMario(
       canvas,
       Offset(8, 4),
-      scale,
+      1.0,
       frame: state == MarioState.jumping ? 1 : _frame,
     );
   }
@@ -101,6 +115,36 @@ class MarioSprite extends PositionComponent with HasGameReference {
     state = MarioState.jumping;
     _jumpVelocity = _jumpForce;
   }
+
+  /// Jump to a specific platform height. Calculates the jump force needed
+  /// to reach the platform's top Y, then sets it as the landing target.
+  void jumpToPlatform(double platformTopY) {
+    state = MarioState.jumping;
+    // v = -sqrt(2 * g * h), add margin so Mario slightly overshoots
+    final heightDiff = _groundY - platformTopY;
+    if (heightDiff > 0) {
+      _jumpVelocity = -sqrt(2 * _gravity * (heightDiff + 15));
+    } else {
+      _jumpVelocity = _jumpForce;
+    }
+    _platformGroundY = platformTopY;
+  }
+
+  /// Update the platform ground Y (called by game each frame while on platform).
+  void updatePlatformGround(double? y) {
+    _platformGroundY = y;
+  }
+
+  /// Mario falls off the platform (when platform scrolls past).
+  void fallOffPlatform() {
+    if (_platformGroundY != null) {
+      _platformGroundY = null;
+      state = MarioState.jumping;
+      _jumpVelocity = 0; // Start falling from current position
+    }
+  }
+
+  bool get isOnPlatform => _platformGroundY != null;
 
   /// Play hurt animation.
   void hurt() {
@@ -129,6 +173,7 @@ class MarioSprite extends PositionComponent with HasGameReference {
     state = MarioState.idle;
     _jumpVelocity = 0;
     _visible = true;
+    _platformGroundY = null;
   }
 
   double get leftEdge => position.x;

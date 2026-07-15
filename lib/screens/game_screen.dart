@@ -47,14 +47,17 @@ class _GameScreenState extends State<GameScreen> {
           GameWidget<TypingMarioGame>(
             game: game,
           ),
-          // On-screen keyboard fallback at the bottom
+          // On-screen keyboard: single row A-M + SPACE + N-Z
           Positioned(
             bottom: 0,
             left: 0,
             right: 0,
             child: _OnScreenKeyboard(
-              onKeyPressed: (String letter) {
+              onLetterPressed: (String letter) {
                 game.onLetterTyped(letter);
+              },
+              onSpacePressed: () {
+                game.onSpacePressed();
               },
             ),
           ),
@@ -64,70 +67,104 @@ class _GameScreenState extends State<GameScreen> {
   }
 }
 
-/// Compact two-row keyboard: A-M (row 1), N-Z (row 2).
-/// All 26 letters visible on screen, no scrolling needed.
+/// Single-row keyboard: A B C D E F G H I J K L M [SPACE] N O P Q R S T U V W X Y Z
+/// Layout: [1-letter margin] 26 letters + space bar [1-letter margin]
+/// Space bar is 2× letter width, centered between M and N.
 class _OnScreenKeyboard extends StatelessWidget {
-  final void Function(String letter) onKeyPressed;
+  final void Function(String letter) onLetterPressed;
+  final VoidCallback onSpacePressed;
 
-  const _OnScreenKeyboard({required this.onKeyPressed});
+  const _OnScreenKeyboard({
+    required this.onLetterPressed,
+    required this.onSpacePressed,
+  });
 
   @override
   Widget build(BuildContext context) {
     final screenWidth = MediaQuery.of(context).size.width;
-    const row1 = 'ABCDEFGHIJKLM'; // 13 letters
-    const row2 = 'NOPQRSTUVWXYZ'; // 13 letters
+    const marginUnits = 2.0;
+    const spaceUnits = 2.0;
+    const letterCount = 26;
+    // left margin(1) + 13 + space(2) + 13 + right margin(1) = 30 units
+    const totalLayoutUnits = marginUnits * 2 + letterCount + spaceUnits; // 30
+
+    final unitWidth = screenWidth / totalLayoutUnits;
+    final btnHeight = unitWidth * 0.72;
+
+    final leftLetters = 'ABCDEFGHIJKLM'.split('');
+    final rightLetters = 'NOPQRSTUVWXYZ'.split('');
 
     return Container(
       color: Colors.black.withValues(alpha: 0.45),
-      padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 4),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
+      padding: EdgeInsets.symmetric(vertical: 2, horizontal: unitWidth * marginUnits),
+      child: Row(
         children: [
-          _buildRow(row1.split(''), screenWidth),
-          const SizedBox(height: 1),
-          _buildRow(row2.split(''), screenWidth),
+          // A-M
+          ...leftLetters.map((l) => _buildLetterBtn(l, unitWidth, btnHeight)),
+          // SPACE bar
+          _buildSpaceBtn(unitWidth * spaceUnits, btnHeight),
+          // N-Z
+          ...rightLetters.map((l) => _buildLetterBtn(l, unitWidth, btnHeight)),
         ],
       ),
     );
   }
 
-  Widget _buildRow(List<String> letters, double screenWidth) {
-    final availableWidth = screenWidth - 20;
-    final btnW = (availableWidth / 13).clamp(20.0, 36.0);
-    final btnH = btnW * 0.72;
-
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: letters.map((letter) {
-        return Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 0.5),
-          child: GestureDetector(
-            onTap: () => onKeyPressed(letter),
-            child: Container(
-              width: btnW,
-              height: btnH,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.9),
-                borderRadius: BorderRadius.circular(4),
-                border: Border.all(color: Colors.blueGrey, width: 1),
-              ),
-              child: FittedBox(
-                fit: BoxFit.scaleDown,
-                child: Text(
-                  letter,
-                  style: TextStyle(
-                    fontSize: btnW * 0.5,
-                    fontWeight: FontWeight.w900,
-                    color: const Color(0xFF333333),
-                    fontFamily: 'monospace',
-                  ),
-                ),
-              ),
+  Widget _buildLetterBtn(String letter, double width, double height) {
+    return GestureDetector(
+      onTap: () => onLetterPressed(letter),
+      child: Container(
+        width: width,
+        height: height,
+        alignment: Alignment.center,
+        margin: const EdgeInsets.symmetric(horizontal: 0.5),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.9),
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(color: Colors.blueGrey, width: 1),
+        ),
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Text(
+            letter,
+            style: TextStyle(
+              fontSize: width * 0.5,
+              fontWeight: FontWeight.w900,
+              color: const Color(0xFF333333),
+              fontFamily: 'monospace',
             ),
           ),
-        );
-      }).toList(),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSpaceBtn(double width, double height) {
+    return GestureDetector(
+      onTap: onSpacePressed,
+      child: Container(
+        width: width,
+        height: height,
+        alignment: Alignment.center,
+        margin: const EdgeInsets.symmetric(horizontal: 1),
+        decoration: BoxDecoration(
+          color: Colors.blue.shade600.withValues(alpha: 0.9),
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(color: Colors.white, width: 1.5),
+        ),
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Text(
+            'JUMP',
+            style: TextStyle(
+              fontSize: width * 0.2,
+              fontWeight: FontWeight.w900,
+              color: Colors.white,
+              fontFamily: 'monospace',
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

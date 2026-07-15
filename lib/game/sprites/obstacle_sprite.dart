@@ -1,14 +1,15 @@
 import 'package:flame/components.dart';
 import 'package:flutter/material.dart';
 import '../../utils/pixel_painter.dart';
+import '../core/letter_target.dart';
 import 'letter_bubble.dart';
 
 /// Enemy/obstacle that moves from right to left.
 /// Has an assigned letter that the player must type to destroy it.
-class ObstacleSprite extends PositionComponent with HasGameReference {
-  final String letter;
+class ObstacleSprite extends LetterTarget {
+  final String _letter;
   double speed;
-  bool isDestroyed = false;
+  bool _isDestroyed = false;
   bool hasPassedMario = false;
   double _destroyTimer = 0;
   double _walkFrame = 0;
@@ -18,17 +19,42 @@ class ObstacleSprite extends PositionComponent with HasGameReference {
   static const double _destroyDuration = 0.6;
 
   ObstacleSprite({
-    required this.letter,
+    required String letter,
     required this.speed,
     required double groundY,
     required double startX,
-  }) {
+  }) : _letter = letter {
     size = Vector2(52, 56);
     anchor = Anchor.bottomLeft;
     position = Vector2(startX, groundY);
 
     // Create letter bubble as a child
-    _letterBubble = LetterBubble(letter: letter);
+    _letterBubble = LetterBubble(letter: _letter);
+  }
+
+  @override
+  String get letter => _letter;
+
+  @override
+  bool get isConsumed => _isDestroyed;
+
+  bool get isDestroyed => _isDestroyed;
+
+  @override
+  void onLetterMatched() {
+    destroy();
+  }
+
+  @override
+  bool collidesWith(Rect marioBounds) {
+    if (_isDestroyed) return false;
+    final obsRect = Rect.fromLTWH(
+      position.x,
+      position.y - size.y,
+      size.x,
+      size.y,
+    );
+    return marioBounds.overlaps(obsRect);
   }
 
   @override
@@ -43,7 +69,7 @@ class ObstacleSprite extends PositionComponent with HasGameReference {
   void update(double dt) {
     super.update(dt);
 
-    if (isDestroyed) {
+    if (_isDestroyed) {
       _destroyTimer += dt;
       // Death animation: move down and spin
       position.y += 200 * dt;
@@ -72,7 +98,7 @@ class ObstacleSprite extends PositionComponent with HasGameReference {
 
   @override
   void render(Canvas canvas) {
-    if (isDestroyed) {
+    if (_isDestroyed) {
       // Draw flipped/falling goomba
       canvas.save();
       final centerX = size.x / 2;
@@ -103,16 +129,9 @@ class ObstacleSprite extends PositionComponent with HasGameReference {
 
   /// Destroy this obstacle with death animation.
   void destroy() {
-    if (isDestroyed) return;
-    isDestroyed = true;
+    if (_isDestroyed) return;
+    _isDestroyed = true;
     _destroyTimer = 0;
     _letterBubble.isVisible = false;
-  }
-
-  /// Check if the obstacle's bounding box overlaps with Mario's area.
-  bool overlapsMario(double marioLeft, double marioRight) {
-    final obsLeft = position.x;
-    final obsRight = position.x + size.x;
-    return obsLeft < marioRight && obsRight > marioLeft;
   }
 }
