@@ -7,7 +7,7 @@ import '../core/letter_target.dart';
 /// Supports multi-layer positioning and optional up/down movement.
 class PlatformSprite extends LetterTarget {
   String _activeLetter;
-  final double speed;
+  double speed;
   final int blockCount;
   final int layer; // 1=low, 2=mid, 3=high
   final bool isMoving;
@@ -45,7 +45,7 @@ class PlatformSprite extends LetterTarget {
 
     // Calculate Y based on layer
     final layerOffset = switch (layer) {
-      1 => 60.0 + Random().nextDouble() * 30,  // low
+      1 => 60.0 + Random().nextDouble() * 30, // low
       2 => 120.0 + Random().nextDouble() * 30, // mid
       3 => 180.0 + Random().nextDouble() * 30, // high
       _ => 60.0,
@@ -216,10 +216,13 @@ class PlatformSprite extends LetterTarget {
       Rect.fromLTWH(pos.dx, pos.dy + s - 2, s, 2),
       Paint()..color = _brickDark,
     );
-    canvas.drawRRect(rect, Paint()
-      ..color = _brickDark
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1);
+    canvas.drawRRect(
+      rect,
+      Paint()
+        ..color = _brickDark
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1,
+    );
   }
 
   double get platformTopY => position.y - size.y;

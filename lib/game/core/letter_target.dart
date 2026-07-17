@@ -4,6 +4,10 @@ import 'dart:ui' show Rect;
 /// Abstract interface for all letter-bearing game objects.
 /// Implemented by ObstacleSprite, FloatingCoinSprite, PlatformSprite, GapSprite.
 abstract class LetterTarget extends PositionComponent {
+  /// Current horizontal scroll speed. The game owns effect-time adjustments.
+  double get speed;
+  set speed(double value);
+
   /// The letter assigned to this target.
   String get letter;
 

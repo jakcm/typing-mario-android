@@ -10,7 +10,7 @@ enum PowerUpType { star, mushroom, coinRain, speedBoots }
 /// A power-up collectible with a letter that activates its effect when typed.
 class PowerUpSprite extends LetterTarget {
   final String _letter;
-  final double speed;
+  double speed;
   final PowerUpType type;
   bool _consumed = false;
   double _time = 0;
@@ -23,8 +23,8 @@ class PowerUpSprite extends LetterTarget {
     required double groundY,
     required double startX,
     required this.type,
-  })  : _letter = letter,
-        _floatBaseY = groundY - 80 - Random().nextDouble() * 60 {
+  }) : _letter = letter,
+       _floatBaseY = groundY - 80 - Random().nextDouble() * 60 {
     size = Vector2(48, 60);
     anchor = Anchor.bottomLeft;
     position = Vector2(startX, _floatBaseY);
@@ -45,12 +45,7 @@ class PowerUpSprite extends LetterTarget {
   @override
   bool collidesWith(Rect marioBounds) {
     if (_consumed) return false;
-    final rect = Rect.fromLTWH(
-      position.x,
-      position.y - size.y,
-      size.x,
-      size.y,
-    );
+    final rect = Rect.fromLTWH(position.x, position.y - size.y, size.x, size.y);
     return marioBounds.overlaps(rect);
   }
 
@@ -107,32 +102,35 @@ class PowerUpSprite extends LetterTarget {
         break;
     }
 
-    // Draw letter below icon
-    final letterPaint = TextPainter(
-      text: TextSpan(
-        text: _letter.toUpperCase(),
-        style: TextStyle(
-          fontSize: 22,
-          fontWeight: FontWeight.w900,
-          color: _letterColor.withAlpha(a),
-          fontFamily: 'monospace',
-          shadows: [
-            Shadow(
-              offset: const Offset(1, 1),
-              color: Colors.black.withAlpha((a * 0.8).round().clamp(0, 255)),
-            ),
-          ],
+    // Hide the letter as soon as collected, even while the icon fades out.
+    // This allows its letter to be safely released to the next target.
+    if (!_consumed) {
+      final letterPaint = TextPainter(
+        text: TextSpan(
+          text: _letter.toUpperCase(),
+          style: TextStyle(
+            fontSize: 22,
+            fontWeight: FontWeight.w900,
+            color: _letterColor.withAlpha(a),
+            fontFamily: 'monospace',
+            shadows: [
+              Shadow(
+                offset: const Offset(1, 1),
+                color: Colors.black.withAlpha((a * 0.8).round().clamp(0, 255)),
+              ),
+            ],
+          ),
         ),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    letterPaint.paint(
-      canvas,
-      Offset(
-        (size.x - letterPaint.width) / 2,
-        size.y - letterPaint.height - 2,
-      ),
-    );
+        textDirection: TextDirection.ltr,
+      )..layout();
+      letterPaint.paint(
+        canvas,
+        Offset(
+          (size.x - letterPaint.width) / 2,
+          size.y - letterPaint.height - 2,
+        ),
+      );
+    }
   }
 
   Color get _letterColor {

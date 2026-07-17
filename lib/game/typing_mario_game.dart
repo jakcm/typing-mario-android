@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 import 'package:flame/game.dart';
 import 'package:flame/events.dart';
@@ -30,6 +31,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
   double gameSpeed = 120; // base obstacle speed
   bool isGameOver = false;
   bool isPaused = false;
+  Timer? _gameOverTimer;
 
   // Screen shake state
   double _shakeTimer = 0;
@@ -48,6 +50,8 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
   final List<LetterTarget> _activeTargets = [];
   final Set<String> _usedLetters = {};
   int _correctStreak = 0;
+  int _activeCoinEffects = 0;
+  static const int _maxCoinEffects = 8;
 
   // Spawn timers
   double _obstacleTimer = 0;
@@ -55,6 +59,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
   double _platformTimer = 0;
   double _gapTimer = 0;
   double _powerUpTimer = 0;
+  double _audioMaintenanceTimer = 0;
 
   static const double _obstacleDelay = 2.0;
   static const double _coinDelay = 6.0;
@@ -81,15 +86,80 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
 
   // ─── Letter pool management ──────────────────────────────────────────
 
-  String _pickAvailableLetter() {
-    final available = _allLetters
+  static const int _recentLetterCooldown = 5;
+  final Map<String, List<String>> _letterBags = {};
+  final Map<String, List<String>> _recentLettersByPool = {};
+
+  /// Picks a letter using a shuffled-bag strategy instead of independent random.
+  ///
+  /// Why not pure random?
+  /// Pure random is fair over very long runs, but it creates ugly short-window
+  /// clusters (for example, one letter appearing 6-7 times in 25 monster spawns).
+  /// A shuffled bag keeps the long-term A-Z probability fair while greatly
+  /// reducing repeated-letter streaks.
+  ///
+  /// [poolKey] gives each target type its own balanced sequence. This matters for
+  /// the common play style "only hit monsters": obstacle letters stay balanced
+  /// even if coin/platform/gap/power-up letters are ignored and remain locked
+  /// until they scroll off screen.
+  String _pickAvailableLetter({String poolKey = 'default'}) {
+    List<String> bag = _letterBags.putIfAbsent(
+      poolKey,
+      () => _newShuffledBag(),
+    );
+    final recent = _recentLettersByPool.putIfAbsent(poolKey, () => <String>[]);
+
+    // Prefer letters that are both unlocked and not recently used in this pool.
+    int index = bag.indexWhere(
+      (l) => !_usedLetters.contains(l) && !recent.contains(l),
+    );
+
+    // If the cooldown is too restrictive because many letters are locked by
+    // ignored targets, fall back to any unlocked letter still in the bag.
+    if (index == -1) {
+      index = bag.indexWhere((l) => !_usedLetters.contains(l));
+    }
+
+    // If the current bag has no usable letter, start a fresh bag from all
+    // currently unlocked letters. This prevents old locked letters from blocking
+    // generation forever while still preserving no-duplicate-visible behavior.
+    if (index == -1) {
+      bag = _availableShuffledLetters();
+      _letterBags[poolKey] = bag;
+      index = bag.indexWhere((l) => !recent.contains(l));
+      if (index == -1) {
+        index = 0;
+      }
+    }
+
+    if (bag.isEmpty) {
+      return 'X'; // fallback: all 26 letters are currently locked
+    }
+
+    final letter = bag.removeAt(index);
+    _usedLetters.add(letter);
+
+    recent.add(letter);
+    if (recent.length > _recentLetterCooldown) {
+      recent.removeAt(0);
+    }
+
+    return letter;
+  }
+
+  List<String> _newShuffledBag() {
+    final bag = _allLetters.split('');
+    bag.shuffle(_rng);
+    return bag;
+  }
+
+  List<String> _availableShuffledLetters() {
+    final bag = _allLetters
         .split('')
         .where((l) => !_usedLetters.contains(l))
         .toList();
-    if (available.isEmpty) return 'X'; // fallback
-    final letter = available[_rng.nextInt(available.length)];
-    _usedLetters.add(letter);
-    return letter;
+    bag.shuffle(_rng);
+    return bag;
   }
 
   void _releaseLetter(String letter) {
@@ -141,11 +211,20 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
 
   @override
   void update(double dt) {
+    // Keep the brief death animation running, but freeze all gameplay while
+    // manually paused before Flame updates any child components.
+    if (isPaused) return;
     super.update(dt);
-    if (isGameOver || isPaused) return;
+    if (isGameOver) return;
 
-    // Keep BGM alive
-    _audio.ensureBgmPlaying();
+    // Audio player state is asynchronous. Checking it every render frame was
+    // expensive on Android TV and compounded when a game was started again.
+    // A twice-per-second watchdog still repairs interrupted BGM promptly.
+    _audioMaintenanceTimer -= dt;
+    if (_audioMaintenanceTimer <= 0) {
+      _audioMaintenanceTimer = 0.5;
+      _audio.ensureBgmPlaying();
+    }
 
     // Screen shake
     _updateShake(dt);
@@ -170,6 +249,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
       _slowTimer -= dt;
       if (_slowTimer <= 0) {
         _slowTimer = 0;
+        _restoreTargetSpeeds();
       }
     }
 
@@ -180,10 +260,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     }
 
     // ─── Update HUD power-up timers ────────────────────────────────────
-    _hud.setPowerUpTimers(
-      invincible: _invincibleTimer,
-      slow: _slowTimer,
-    );
+    _hud.setPowerUpTimers(invincible: _invincibleTimer, slow: _slowTimer);
 
     // ─── Spawn timers ───────────────────────────────────────────────────
     // Obstacles: always ensure at least one is active
@@ -250,7 +327,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
   void _spawnObstacle() {
     if (isGameOver) return;
 
-    final letter = _pickAvailableLetter();
+    final letter = _pickAvailableLetter(poolKey: 'obstacle');
     final obsGroundY = _terrain.getGroundYAt(_screenW + 20);
     final obstacle = ObstacleSprite(
       letter: letter,
@@ -266,7 +343,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
   }
 
   void _spawnCoin() {
-    final letter = _pickAvailableLetter();
+    final letter = _pickAvailableLetter(poolKey: 'coin');
     final coinGroundY = _terrain.getGroundYAt(_screenW + 20);
     final coin = FloatingCoinSprite(
       letter: letter,
@@ -279,7 +356,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
   }
 
   void _spawnPlatform() {
-    final letter = _pickAvailableLetter();
+    final letter = _pickAvailableLetter(poolKey: 'platform');
     final platGroundY = _terrain.getGroundYAt(_screenW + 20);
 
     // Multi-layer: weighted random selection
@@ -305,7 +382,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
   }
 
   void _spawnGap() {
-    final letter = _pickAvailableLetter();
+    final letter = _pickAvailableLetter(poolKey: 'gap');
     final gapGroundY = _terrain.getGroundYAt(_screenW + 20);
     final gap = GapSprite(
       letter: letter,
@@ -322,7 +399,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     if (isGameOver) return;
     if (_countType<PowerUpSprite>() >= 1) return; // max 1 on screen
 
-    final letter = _pickAvailableLetter();
+    final letter = _pickAvailableLetter(poolKey: 'powerup');
     final puGroundY = _terrain.getGroundYAt(_screenW + 20);
 
     // Random type selection
@@ -345,6 +422,57 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     return _slowTimer > 0 ? baseSpeed * 0.5 : baseSpeed;
   }
 
+  double _baseSpeedFor(LetterTarget target) => switch (target) {
+    FloatingCoinSprite() => gameSpeed * 0.8,
+    PlatformSprite() => gameSpeed * 0.9,
+    PowerUpSprite() => gameSpeed * 0.75,
+    _ => gameSpeed,
+  };
+
+  void _setTargetSpeeds({required bool slowed}) {
+    for (final target in _activeTargets) {
+      target.speed = _baseSpeedFor(target) * (slowed ? 0.5 : 1.0);
+    }
+  }
+
+  void activateSpeedBoots() {
+    _slowTimer = 8.0;
+    _setTargetSpeeds(slowed: true);
+  }
+
+  void _restoreTargetSpeeds() => _setTargetSpeeds(slowed: false);
+
+  @visibleForTesting
+  void addTargetForTesting(LetterTarget target) => _activeTargets.add(target);
+
+  @visibleForTesting
+  void expireSpeedBootsForTesting() {
+    _slowTimer = 0;
+    _restoreTargetSpeeds();
+  }
+
+  // ─── Pause / resume ───────────────────────────────────────────────────
+
+  void pauseGame() {
+    if (isGameOver || isPaused) return;
+    isPaused = true;
+    _audio.pauseBgm();
+  }
+
+  void resumeGame() {
+    if (isGameOver || !isPaused) return;
+    isPaused = false;
+    _audio.resumeBgm();
+  }
+
+  void togglePause() {
+    if (isPaused) {
+      resumeGame();
+    } else {
+      pauseGame();
+    }
+  }
+
   // ─── Input handling ───────────────────────────────────────────────────
 
   @override
@@ -352,7 +480,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     KeyEvent event,
     Set<LogicalKeyboardKey> keysPressed,
   ) {
-    if (isGameOver) return KeyEventResult.ignored;
+    if (isGameOver || isPaused) return KeyEventResult.ignored;
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
 
     final key = event.logicalKey;
@@ -383,7 +511,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
 
   /// Public method for on-screen keyboard letter buttons.
   void onLetterTyped(String letter) {
-    if (isGameOver) return;
+    if (isGameOver || isPaused) return;
     final upper = letter.toUpperCase();
 
     // Find matching target (priority: obstacles > power-ups > coins > platforms > gaps)
@@ -413,7 +541,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
 
   /// Public method for on-screen space bar (jump button).
   void onSpacePressed() {
-    if (isGameOver) return;
+    if (isGameOver || isPaused) return;
     _mario.jump();
     _audio.playJumpSound();
   }
@@ -422,6 +550,11 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
 
   void _onTargetMatched(LetterTarget target) {
     target.onLetterMatched();
+
+    // ── Release the letter back to the pool IMMEDIATELY ──
+    // The target is consumed; its letter must be available for reassignment
+    // right away, not after a death animation or cleanup cycle.
+    _releaseLetter(target.letter);
 
     if (target is ObstacleSprite) {
       _handleObstacleDestroyed(target);
@@ -455,13 +588,10 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     score += 10;
     _hud.setScore(score);
 
-    // Coin effect
-    add(
-      CoinEffect(
-        position: Vector2(
-          obstacle.position.x + obstacle.size.x / 2,
-          obstacle.position.y - obstacle.size.y / 2,
-        ),
+    _addCoinEffect(
+      Vector2(
+        obstacle.position.x + obstacle.size.x / 2,
+        obstacle.position.y - obstacle.size.y / 2,
       ),
     );
 
@@ -474,13 +604,23 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     score += 15;
     _hud.setScore(score);
 
-    // Coin effect at coin position
+    _addCoinEffect(
+      Vector2(
+        coin.position.x + coin.size.x / 2,
+        coin.position.y - coin.size.y / 2,
+      ),
+    );
+  }
+
+  void _addCoinEffect(Vector2 position) {
+    if (_activeCoinEffects >= _maxCoinEffects) return;
+    _activeCoinEffects++;
     add(
       CoinEffect(
-        position: Vector2(
-          coin.position.x + coin.size.x / 2,
-          coin.position.y - coin.size.y / 2,
-        ),
+        position: position,
+        onComplete: () {
+          _activeCoinEffects = max(0, _activeCoinEffects - 1);
+        },
       ),
     );
   }
@@ -521,17 +661,17 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
         _hud.setScore(score);
         // Triple coin effect
         for (int i = 0; i < 3; i++) {
-          add(CoinEffect(
-            position: Vector2(
+          _addCoinEffect(
+            Vector2(
               powerUp.position.x + _rng.nextDouble() * 40 - 20,
               powerUp.position.y - 30 - _rng.nextDouble() * 30,
             ),
-          ));
+          );
         }
         break;
       case PowerUpType.speedBoots:
-        // 8 seconds slow obstacles
-        _slowTimer = 8.0;
+        // Slow both existing and newly spawned targets for 8 seconds.
+        activateSpeedBoots();
         break;
     }
 
@@ -611,7 +751,9 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
 
   void _onObstacleHitMario(ObstacleSprite obstacle) {
     _correctStreak = 0;
-    _audio.playStompSound();
+    // Damage has its own highest-priority audio channel, so the life-loss cue
+    // is never replaced by nearby jump, stomp, or coin feedback.
+    _audio.playDamageSound();
     _loseLife();
 
     obstacle.destroy();
@@ -636,24 +778,30 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
   void _cleanupTargets() {
     final toRemove = <LetterTarget>[];
     for (final target in _activeTargets) {
-      // Remove consumed targets that have finished their animation
-      if (target.isConsumed) {
-        if (target.parent == null) {
-          toRemove.add(target);
-          _releaseLetter(target.letter);
-        } else if (target is ObstacleSprite && target.isDestroyed) {
-          if (target.parent == null) {
-            toRemove.add(target);
-            _releaseLetter(target.letter);
-          }
-        } else {
-          toRemove.add(target);
+      // Some sprites remove themselves in their own update() when they pass
+      // x < -50. Once detached, Flame stops updating their position, so they
+      // may never reach this method's older x < -100 cleanup threshold.
+      // If we keep them in _activeTargets, their letters stay locked forever.
+      if (target.parent == null) {
+        toRemove.add(target);
+        if (!target.isConsumed) {
           _releaseLetter(target.letter);
         }
         continue;
       }
 
-      // Remove targets that scrolled off screen (left side)
+      // Remove consumed non-obstacle targets immediately from tracking.
+      // Their letters were already released by the consuming handler.
+      // Obstacles stay tracked until their death animation detaches them.
+      if (target.isConsumed) {
+        if (target is! ObstacleSprite) {
+          toRemove.add(target);
+        }
+        continue;
+      }
+
+      // Safety cleanup for unconsumed targets that are far off screen but have
+      // not detached themselves yet. Their letters are still locked, release now.
       if (target.position.x + target.size.x < -100) {
         toRemove.add(target);
         _releaseLetter(target.letter);
@@ -681,8 +829,11 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     _audio.stopBgm();
     _audio.playGameOverSound();
 
-    Future.delayed(const Duration(seconds: 2), () {
-      onGameOver?.call(score);
+    _gameOverTimer?.cancel();
+    _gameOverTimer = Timer(const Duration(seconds: 2), () {
+      if (isMounted) {
+        onGameOver?.call(score);
+      }
     });
   }
 
@@ -708,6 +859,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
   // ─── Cleanup ──────────────────────────────────────────────────────────
   @override
   void onRemove() {
+    _gameOverTimer?.cancel();
     _audio.stopBgm();
     _audio.dispose();
     super.onRemove();

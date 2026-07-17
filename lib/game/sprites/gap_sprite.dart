@@ -7,10 +7,11 @@ import '../core/letter_target.dart';
 /// If NOT pressed, the gap passes under Mario with a bump effect (no life loss).
 class GapSprite extends LetterTarget {
   final String _activeLetter;
-  final double speed;
+  double speed;
   bool _consumed = false;
   bool _missTriggered = false;
-  bool _letterHidden = false; // Controls letter display, preserves original for cleanup
+  bool _letterHidden =
+      false; // Controls letter display, preserves original for cleanup
   static const double gapWidth = 120.0;
   static const double brickSize = 32.0;
 
@@ -126,9 +127,7 @@ class GapSprite extends LetterTarget {
             fontWeight: FontWeight.w900,
             color: Colors.yellow,
             fontFamily: 'monospace',
-            shadows: [
-              Shadow(offset: Offset(1, 1), color: Colors.black),
-            ],
+            shadows: [Shadow(offset: Offset(1, 1), color: Colors.black)],
           ),
         ),
         textDirection: TextDirection.ltr,
@@ -165,9 +164,12 @@ class GapSprite extends LetterTarget {
       Rect.fromLTWH(pos.dx, pos.dy + s - 2, s, 2),
       Paint()..color = _brickDark,
     );
-    canvas.drawRRect(rect, Paint()
-      ..color = _brickDark
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1);
+    canvas.drawRRect(
+      rect,
+      Paint()
+        ..color = _brickDark
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1,
+    );
   }
 }

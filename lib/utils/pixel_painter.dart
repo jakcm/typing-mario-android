@@ -20,20 +20,34 @@ class PixelPainter {
 
   static Color? _colorForChar(String c) {
     switch (c) {
-      case 'R': return _red;
-      case 'r': return _darkRed;
-      case 'B': return _brown;
-      case 'S': return _skin;
-      case 'D': return _blue;
-      case 'd': return _darkBlue;
-      case 'Y': return _yellow;
-      case 'W': return _white;
-      case 'K': return _black;
-      case 'G': return _green;
-      case 'T': return _tan;
-      case 'O': return _orange;
-      case '.': return null;
-      default: return null;
+      case 'R':
+        return _red;
+      case 'r':
+        return _darkRed;
+      case 'B':
+        return _brown;
+      case 'S':
+        return _skin;
+      case 'D':
+        return _blue;
+      case 'd':
+        return _darkBlue;
+      case 'Y':
+        return _yellow;
+      case 'W':
+        return _white;
+      case 'K':
+        return _black;
+      case 'G':
+        return _green;
+      case 'T':
+        return _tan;
+      case 'O':
+        return _orange;
+      case '.':
+        return null;
+      default:
+        return null;
     }
   }
 
@@ -46,13 +60,17 @@ class PixelPainter {
     double pixelSize, {
     int alpha = 255,
   }) {
+    // Reuse one Paint for the entire sprite. This path runs for every game
+    // object every frame, so allocating a Paint per pixel causes TV-side GC
+    // pressure and raster jank.
+    final paint = Paint();
+    final alphaByte = alpha.clamp(0, 255);
     for (int row = 0; row < pattern.length; row++) {
       for (int col = 0; col < pattern[row].length; col++) {
         final c = pattern[row][col];
         final color = _colorForChar(c);
         if (color == null) continue;
-        final paint = Paint()
-          ..color = color.withValues(alpha: alpha / 255.0);
+        paint.color = color.withAlpha(alphaByte);
         canvas.drawRect(
           Rect.fromLTWH(
             offset.dx + col * pixelSize,
@@ -192,11 +210,7 @@ class PixelPainter {
     '........',
   ];
 
-  static void drawHeart(
-    Canvas canvas,
-    Offset position,
-    double scale,
-  ) {
+  static void drawHeart(Canvas canvas, Offset position, double scale) {
     final ps = 3.0 * scale;
     _drawPattern(canvas, position, _heartPixels, ps);
   }
@@ -213,11 +227,7 @@ class PixelPainter {
 
   // ─── Star (8×8 golden star) ──────────────────────────────────────────
 
-  static void drawCloud(
-    Canvas canvas,
-    Offset position,
-    double scale,
-  ) {
+  static void drawCloud(Canvas canvas, Offset position, double scale) {
     final ps = 8.0 * scale;
     _drawPattern(canvas, position, _cloudPixels, ps);
   }

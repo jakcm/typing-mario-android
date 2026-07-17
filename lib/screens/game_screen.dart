@@ -1,36 +1,65 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flame/game.dart';
 import '../game/typing_mario_game.dart';
+import '../widgets/game_controls.dart';
 
 class GameScreen extends StatefulWidget {
-  const GameScreen({super.key});
+  const GameScreen({super.key, this.game});
+
+  @visibleForTesting
+  final TypingMarioGame? game;
 
   @override
   State<GameScreen> createState() => _GameScreenState();
 }
 
-class _GameScreenState extends State<GameScreen> {
+class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   TypingMarioGame? _game;
+  bool _gameCreated = false;
 
   @override
   void initState() {
     super.initState();
-    _game = TypingMarioGame(
-      onGameOver: (int finalScore) {
-        if (mounted) {
-          Navigator.pushReplacementNamed(
-            context,
-            '/gameover',
-            arguments: finalScore,
-          );
-        }
-      },
-    );
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_gameCreated) return;
+    _gameCreated = true;
+
+    _game =
+        widget.game ??
+        TypingMarioGame(
+          onGameOver: (int finalScore) {
+            if (mounted) {
+              Navigator.pushReplacementNamed(
+                context,
+                '/gameover',
+                arguments: finalScore,
+              );
+            }
+          },
+        );
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      _game?.pauseGame();
+      if (mounted) setState(() {});
+    }
   }
 
   @override
   void dispose() {
-    _game?.onRemove();
+    WidgetsBinding.instance.removeObserver(this);
+    // GameWidget owns Flame's component lifecycle; do not invoke onRemove()
+    // manually or audio cleanup can run twice during route transitions.
     super.dispose();
   }
 
@@ -44,126 +73,42 @@ class _GameScreenState extends State<GameScreen> {
       body: Stack(
         children: [
           // Flame game widget
-          GameWidget<TypingMarioGame>(
-            game: game,
+          GameWidget<TypingMarioGame>(game: game),
+          Positioned(
+            top: 8,
+            right: 8,
+            child: SafeArea(
+              left: false,
+              bottom: false,
+              child: GamePauseButton(
+                isPaused: game.isPaused,
+                onToggle: () {
+                  setState(game.togglePause);
+                },
+              ),
+            ),
           ),
-          // On-screen keyboard: single row A-M + SPACE + N-Z
+          // The letter bar starts collapsed so it does not cover the game.
           Positioned(
             bottom: 0,
             left: 0,
             right: 0,
-            child: _OnScreenKeyboard(
-              onLetterPressed: (String letter) {
-                game.onLetterTyped(letter);
-              },
-              onSpacePressed: () {
-                game.onSpacePressed();
-              },
+            child: OnScreenKeyboard(
+              onLetterPressed: game.onLetterTyped,
+              onSpacePressed: game.onSpacePressed,
+            ),
+          ),
+          // Draw this last, above both the Flame game and the bottom keyboard.
+          Positioned(
+            left: 8,
+            bottom: 8,
+            child: SafeArea(
+              top: false,
+              right: false,
+              child: QuitButton(onQuit: SystemNavigator.pop),
             ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-/// Single-row keyboard: A B C D E F G H I J K L M [SPACE] N O P Q R S T U V W X Y Z
-/// Layout: [1-letter margin] 26 letters + space bar [1-letter margin]
-/// Space bar is 2× letter width, centered between M and N.
-class _OnScreenKeyboard extends StatelessWidget {
-  final void Function(String letter) onLetterPressed;
-  final VoidCallback onSpacePressed;
-
-  const _OnScreenKeyboard({
-    required this.onLetterPressed,
-    required this.onSpacePressed,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final screenWidth = MediaQuery.of(context).size.width;
-    const marginUnits = 3.0;
-    const spaceUnits = 2.0;
-    const letterCount = 26;
-    // left margin(3) + 13 + space(2) + 13 + right margin(3) = 34 units
-    const totalLayoutUnits = marginUnits * 2 + letterCount + spaceUnits; // 34
-
-    final unitWidth = screenWidth / totalLayoutUnits;
-    final btnHeight = unitWidth * 0.72;
-
-    final leftLetters = 'ABCDEFGHIJKLM'.split('');
-    final rightLetters = 'NOPQRSTUVWXYZ'.split('');
-
-    return Container(
-      color: Colors.black.withValues(alpha: 0.45),
-      padding: EdgeInsets.symmetric(vertical: 2, horizontal: unitWidth * marginUnits),
-      child: Row(
-        children: [
-          // A-M
-          ...leftLetters.map((l) => _buildLetterBtn(l, unitWidth, btnHeight)),
-          // SPACE bar
-          _buildSpaceBtn(unitWidth * spaceUnits, btnHeight),
-          // N-Z
-          ...rightLetters.map((l) => _buildLetterBtn(l, unitWidth, btnHeight)),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildLetterBtn(String letter, double width, double height) {
-    return GestureDetector(
-      onTap: () => onLetterPressed(letter),
-      child: Container(
-        width: width,
-        height: height,
-        alignment: Alignment.center,
-        margin: const EdgeInsets.symmetric(horizontal: 0.5),
-        decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.9),
-          borderRadius: BorderRadius.circular(4),
-          border: Border.all(color: Colors.blueGrey, width: 1),
-        ),
-        child: FittedBox(
-          fit: BoxFit.scaleDown,
-          child: Text(
-            letter,
-            style: TextStyle(
-              fontSize: width * 0.5,
-              fontWeight: FontWeight.w900,
-              color: const Color(0xFF333333),
-              fontFamily: 'monospace',
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSpaceBtn(double width, double height) {
-    return GestureDetector(
-      onTap: onSpacePressed,
-      child: Container(
-        width: width,
-        height: height,
-        alignment: Alignment.center,
-        margin: const EdgeInsets.symmetric(horizontal: 1),
-        decoration: BoxDecoration(
-          color: Colors.blue.shade600.withValues(alpha: 0.9),
-          borderRadius: BorderRadius.circular(4),
-          border: Border.all(color: Colors.white, width: 1.5),
-        ),
-        child: FittedBox(
-          fit: BoxFit.scaleDown,
-          child: Text(
-            'JUMP',
-            style: TextStyle(
-              fontSize: width * 0.2,
-              fontWeight: FontWeight.w900,
-              color: Colors.white,
-              fontFamily: 'monospace',
-            ),
-          ),
-        ),
       ),
     );
   }

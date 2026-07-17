@@ -6,11 +6,13 @@ import '../../utils/pixel_painter.dart';
 /// Coin particle effect that flies up and fades out when a letter is correct.
 /// Uses simple alpha blending instead of saveLayer for performance.
 class CoinEffect extends PositionComponent with HasGameReference {
+  final VoidCallback? onComplete;
   double _timer = 0;
-  final double _duration = 1.0;
+  static const double _duration = 0.7;
   final List<_CoinParticle> _particles = [];
+  bool _completed = false;
 
-  CoinEffect({required Vector2 position}) {
+  CoinEffect({required Vector2 position, this.onComplete}) {
     this.position = position;
     size = Vector2(40, 40);
     anchor = Anchor.center;
@@ -22,14 +24,16 @@ class CoinEffect extends PositionComponent with HasGameReference {
     final rng = Random();
     // Create 5 coin particles
     for (int i = 0; i < 5; i++) {
-      _particles.add(_CoinParticle(
-        offsetX: 0,
-        offsetY: 0,
-        velocityX: (rng.nextDouble() - 0.5) * 60,
-        velocityY: -(rng.nextDouble() * 100 + 60),
-        rotationSpeed: (rng.nextDouble() - 0.5) * 6,
-        scale: 0.7 + rng.nextDouble() * 0.4,
-      ));
+      _particles.add(
+        _CoinParticle(
+          offsetX: 0,
+          offsetY: 0,
+          velocityX: (rng.nextDouble() - 0.5) * 60,
+          velocityY: -(rng.nextDouble() * 100 + 60),
+          rotationSpeed: (rng.nextDouble() - 0.5) * 6,
+          scale: 0.7 + rng.nextDouble() * 0.4,
+        ),
+      );
     }
   }
 
@@ -38,6 +42,7 @@ class CoinEffect extends PositionComponent with HasGameReference {
     super.update(dt);
     _timer += dt;
     if (_timer >= _duration) {
+      _complete();
       removeFromParent();
       return;
     }
@@ -47,6 +52,18 @@ class CoinEffect extends PositionComponent with HasGameReference {
       p.velocityY += 200 * dt; // gravity
       p.rotation += p.rotationSpeed * dt;
     }
+  }
+
+  void _complete() {
+    if (_completed) return;
+    _completed = true;
+    onComplete?.call();
+  }
+
+  @override
+  void onRemove() {
+    _complete();
+    super.onRemove();
   }
 
   @override

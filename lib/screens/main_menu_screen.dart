@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../utils/pixel_painter.dart';
+import '../version.dart';
+import '../widgets/game_controls.dart';
 
 class MainMenuScreen extends StatefulWidget {
   const MainMenuScreen({super.key});
@@ -48,10 +51,7 @@ class _MainMenuScreenState extends State<MainMenuScreen>
         child: Stack(
           children: [
             // Clouds
-            CustomPaint(
-              size: Size.infinite,
-              painter: _MenuCloudPainter(),
-            ),
+            CustomPaint(size: Size.infinite, painter: _MenuCloudPainter()),
             // Ground
             Positioned(
               bottom: 0,
@@ -77,6 +77,35 @@ class _MainMenuScreenState extends State<MainMenuScreen>
                 painter: _GrassTuftsPainter(),
               ),
             ),
+            Positioned(
+              left: 8,
+              bottom: 8,
+              child: SafeArea(
+                top: false,
+                right: false,
+                child: QuitButton(onQuit: SystemNavigator.pop),
+              ),
+            ),
+            Positioned(
+              right: 10,
+              bottom: 8,
+              child: SafeArea(
+                top: false,
+                left: false,
+                child: Text(
+                  'Version: $kBuildVersion',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.85),
+                    fontSize: 11,
+                    fontFamily: 'monospace',
+                    fontWeight: FontWeight.w600,
+                    shadows: const [
+                      Shadow(offset: Offset(1, 1), color: Colors.black54),
+                    ],
+                  ),
+                ),
+              ),
+            ),
             // Content
             Center(
               child: Column(
@@ -94,9 +123,7 @@ class _MainMenuScreenState extends State<MainMenuScreen>
                     child: SizedBox(
                       width: 80,
                       height: 80,
-                      child: CustomPaint(
-                        painter: _MenuMarioPainter(),
-                      ),
+                      child: CustomPaint(painter: _MenuMarioPainter()),
                     ),
                   ),
                   const SizedBox(height: 10),
@@ -115,20 +142,7 @@ class _MainMenuScreenState extends State<MainMenuScreen>
                       ],
                     ),
                   ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    '🎹 Type Letters to Save Mario! 🎮',
-                    style: TextStyle(
-                      fontSize: 20,
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      fontFamily: 'monospace',
-                      shadows: [
-                        Shadow(offset: Offset(2, 2), color: Colors.black54),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 30),
+                  const SizedBox(height: 18),
                   // Start button
                   GestureDetector(
                     onTap: () {
@@ -185,8 +199,12 @@ class _MenuCloudPainter extends CustomPainter {
   void _drawCloud(Canvas canvas, Paint paint, Offset pos, double scale) {
     final s = 12.0 * scale;
     for (var entry in [
-      [0, 1, 4], [1, -1, 6], [2, -2, 8], [3, -2, 8],
-      [4, -1, 6], [5, 0, 4]
+      [0, 1, 4],
+      [1, -1, 6],
+      [2, -2, 8],
+      [3, -2, 8],
+      [4, -1, 6],
+      [5, 0, 4],
     ]) {
       for (int x = entry[1]; x < entry[1] + entry[2]; x++) {
         canvas.drawRect(
