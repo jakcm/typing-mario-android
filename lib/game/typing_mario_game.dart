@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math';
 import 'package:flame/game.dart';
+import 'package:flame/components.dart' show Component;
 import 'package:flame/events.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -23,7 +24,27 @@ import '../utils/audio_manager.dart';
 class TypingMarioGame extends FlameGame with KeyboardEvents {
   final void Function(int score)? onGameOver;
 
-  TypingMarioGame({this.onGameOver});
+  TypingMarioGame({
+    this.onGameOver,
+    Random? random,
+    bool audioEnabled = true,
+    this.spawnIntervalScale = 1.0,
+    this.collisionsEnabled = true,
+    this.hostLifecycleSnapshot = false,
+  }) : _rng = random ?? Random(),
+       _audio = audioEnabled ? AudioManager() : null {
+    if (spawnIntervalScale <= 0) {
+      throw ArgumentError.value(spawnIntervalScale, 'spawnIntervalScale');
+    }
+  }
+
+  final double spawnIntervalScale;
+  final bool collisionsEnabled;
+
+  /// Host tests have no GameWidget frame boundary. Snapshot traversal preserves
+  /// Flame's real child updateTree/lifecycle while avoiding mutation of the
+  /// ordered child set during a synchronous test frame.
+  final bool hostLifecycleSnapshot;
 
   // ─── State ────────────────────────────────────────────────────────────
   int score = 0;
@@ -43,8 +64,12 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
   late HudComponent _hud;
   late TerrainSystem _terrain;
   ScrollingBackground? _background;
-  final AudioManager _audio = AudioManager();
-  final Random _rng = Random();
+  final AudioManager? _audio;
+  final Random _rng;
+  bool _spawningEnabled = true;
+  bool _loaded = false;
+  final Map<String, int> _spawnedByType = <String, int>{};
+  int _obstacleMatches = 0;
 
   // ─── Multi-target system ──────────────────────────────────────────────
   final List<LetterTarget> _activeTargets = [];
@@ -170,13 +195,19 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
 
   @override
   Future<void> onLoad() async {
+    if (_loaded) return;
+    _loaded = true;
     super.onLoad();
 
     _screenW = size.x;
     _groundY = size.y * 0.78;
 
     // Terrain system
-    _terrain = TerrainSystem(baseGroundY: _groundY, screenHeight: size.y);
+    _terrain = TerrainSystem(
+      baseGroundY: _groundY,
+      screenHeight: size.y,
+      random: _rng,
+    );
     _terrain.init(_screenW);
 
     // Background (now needs terrain reference)
@@ -193,10 +224,10 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     add(_hud);
 
     // Initialize audio
-    await _audio.init();
+    await _audio?.init();
 
     // Start BGM
-    _audio.startBgm();
+    _audio?.startBgm();
 
     // Initialize spawn timers (stagger them)
     _obstacleTimer = 1.0;
@@ -214,7 +245,14 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     // Keep the brief death animation running, but freeze all gameplay while
     // manually paused before Flame updates any child components.
     if (isPaused) return;
-    super.update(dt);
+    if (hostLifecycleSnapshot) {
+      processLifecycleEvents();
+      for (final child in children.toList(growable: false)) {
+        child.updateTree(dt);
+      }
+    } else {
+      super.update(dt);
+    }
     if (isGameOver) return;
 
     // Audio player state is asynchronous. Checking it every render frame was
@@ -223,7 +261,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     _audioMaintenanceTimer -= dt;
     if (_audioMaintenanceTimer <= 0) {
       _audioMaintenanceTimer = 0.5;
-      _audio.ensureBgmPlaying();
+      _audio?.ensureBgmPlaying();
     }
 
     // Screen shake
@@ -265,41 +303,45 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     // ─── Spawn timers ───────────────────────────────────────────────────
     // Obstacles: always ensure at least one is active
     _obstacleTimer -= dt;
-    if (_obstacleTimer <= 0 && _countType<ObstacleSprite>() == 0) {
+    if (_spawningEnabled &&
+        _obstacleTimer <= 0 &&
+        _countType<ObstacleSprite>() == 0) {
       _spawnObstacle();
-      _obstacleTimer = _obstacleDelay;
+      _obstacleTimer = _obstacleDelay * spawnIntervalScale;
     }
 
     // Coins
     _coinTimer -= dt;
-    if (_coinTimer <= 0) {
+    if (_spawningEnabled && _coinTimer <= 0) {
       _spawnCoin();
-      _coinTimer = _coinDelay + _rng.nextDouble() * 3;
+      _coinTimer = (_coinDelay + _rng.nextDouble() * 3) * spawnIntervalScale;
     }
 
     // Platforms
     _platformTimer -= dt;
-    if (_platformTimer <= 0) {
+    if (_spawningEnabled && _platformTimer <= 0) {
       _spawnPlatform();
-      _platformTimer = _platformDelay + _rng.nextDouble() * 4;
+      _platformTimer =
+          (_platformDelay + _rng.nextDouble() * 4) * spawnIntervalScale;
     }
 
     // Gaps
     _gapTimer -= dt;
-    if (_gapTimer <= 0) {
+    if (_spawningEnabled && _gapTimer <= 0) {
       _spawnGap();
-      _gapTimer = _gapDelay + _rng.nextDouble() * 5;
+      _gapTimer = (_gapDelay + _rng.nextDouble() * 5) * spawnIntervalScale;
     }
 
     // Power-ups
     _powerUpTimer -= dt;
-    if (_powerUpTimer <= 0) {
+    if (_spawningEnabled && _powerUpTimer <= 0) {
       _spawnPowerUp();
-      _powerUpTimer = _powerUpDelay + _rng.nextDouble() * 10;
+      _powerUpTimer =
+          (_powerUpDelay + _rng.nextDouble() * 10) * spawnIntervalScale;
     }
 
     // ─── Collision detection ────────────────────────────────────────────
-    _checkCollisions();
+    if (collisionsEnabled) _checkCollisions();
 
     // ─── Platform scroll tracking ────────────────────────────────────────
     if (_activePlatform != null && _mario.isOnPlatform) {
@@ -337,9 +379,10 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     );
     add(obstacle);
     _activeTargets.add(obstacle);
+    _recordSpawn(obstacle);
 
     // Speak the letter
-    _audio.speakLetter(letter);
+    _audio?.speakLetter(letter);
   }
 
   void _spawnCoin() {
@@ -353,6 +396,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     );
     add(coin);
     _activeTargets.add(coin);
+    _recordSpawn(coin);
   }
 
   void _spawnPlatform() {
@@ -379,6 +423,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     );
     add(platform);
     _activeTargets.add(platform);
+    _recordSpawn(platform);
   }
 
   void _spawnGap() {
@@ -393,6 +438,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     );
     add(gap);
     _activeTargets.add(gap);
+    _recordSpawn(gap);
   }
 
   void _spawnPowerUp() {
@@ -415,6 +461,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     );
     add(powerUp);
     _activeTargets.add(powerUp);
+    _recordSpawn(powerUp);
   }
 
   /// Get effective speed accounting for slow effect.
@@ -456,13 +503,13 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
   void pauseGame() {
     if (isGameOver || isPaused) return;
     isPaused = true;
-    _audio.pauseBgm();
+    _audio?.pauseBgm();
   }
 
   void resumeGame() {
     if (isGameOver || !isPaused) return;
     isPaused = false;
-    _audio.resumeBgm();
+    _audio?.resumeBgm();
   }
 
   void togglePause() {
@@ -471,6 +518,13 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     } else {
       pauseGame();
     }
+  }
+
+  /// Stops gameplay and waits until every native audio player is silent.
+  Future<void> prepareToQuit() async {
+    isPaused = true;
+    _gameOverTimer?.cancel();
+    await _audio?.stopAllAudio();
   }
 
   // ─── Input handling ───────────────────────────────────────────────────
@@ -488,7 +542,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     // Space bar → jump
     if (key == LogicalKeyboardKey.space) {
       _mario.jump();
-      _audio.playJumpSound();
+      _audio?.playJumpSound();
       return KeyEventResult.handled;
     }
 
@@ -514,21 +568,28 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     if (isGameOver || isPaused) return;
     final upper = letter.toUpperCase();
 
-    // Find matching target (priority: obstacles > power-ups > coins > platforms > gaps)
+    // Find the globally highest-priority matching target. Do not break on a
+    // power-up before inspecting later obstacles with the same letter.
+    final candidates = _activeTargets.where((target) {
+      if (target.isConsumed) return false;
+      if (target is PlatformSprite && target.isUsed) return false;
+      return target.letter.toUpperCase() == upper;
+    });
+    int priority(LetterTarget target) => switch (target) {
+      ObstacleSprite() => 0,
+      PowerUpSprite() => 1,
+      FloatingCoinSprite() => 2,
+      PlatformSprite() => 3,
+      GapSprite() => 4,
+      _ => 5,
+    };
     LetterTarget? match;
-    for (final target in _activeTargets) {
-      if (target.isConsumed) continue;
-      if (target is PlatformSprite && target.isUsed) continue;
-      if (target.letter.toUpperCase() == upper) {
-        if (target is ObstacleSprite) {
-          match = target;
-          break; // Obstacles have highest priority
-        }
-        if (target is PowerUpSprite) {
-          match = target;
-          break; // Power-ups second priority (urgent to collect)
-        }
-        match ??= target;
+    var bestPriority = 1 << 30;
+    for (final target in candidates) {
+      final targetPriority = priority(target);
+      if (targetPriority < bestPriority) {
+        match = target;
+        bestPriority = targetPriority;
       }
     }
 
@@ -543,7 +604,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
   void onSpacePressed() {
     if (isGameOver || isPaused) return;
     _mario.jump();
-    _audio.playJumpSound();
+    _audio?.playJumpSound();
   }
 
   // ─── Match handling ───────────────────────────────────────────────────
@@ -572,7 +633,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
 
     // Encouragement on streaks of 5
     if (_correctStreak >= 5 && _correctStreak % 5 == 0) {
-      _audio.playEncouragement();
+      _audio?.playEncouragement();
     }
 
     // Increase difficulty slightly
@@ -580,10 +641,11 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
   }
 
   void _handleObstacleDestroyed(ObstacleSprite obstacle) {
+    _obstacleMatches++;
     _mario.jump();
-    _audio.playJumpSound();
-    _audio.playStompSound();
-    _audio.playCoinSound();
+    _audio?.playJumpSound();
+    _audio?.playStompSound();
+    _audio?.playCoinSound();
 
     score += 10;
     _hud.setScore(score);
@@ -600,7 +662,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
   }
 
   void _handleCoinCollected(FloatingCoinSprite coin) {
-    _audio.playCoinSound();
+    _audio?.playCoinSound();
     score += 15;
     _hud.setScore(score);
 
@@ -628,20 +690,20 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
   void _handlePlatformJumped(PlatformSprite platform) {
     _mario.jumpToPlatform(platform.platformTopY);
     _activePlatform = platform;
-    _audio.playJumpSound();
+    _audio?.playJumpSound();
     score += 5;
     _hud.setScore(score);
   }
 
   void _handleGapCleared(GapSprite gap) {
     _mario.jump();
-    _audio.playJumpSound();
+    _audio?.playJumpSound();
     score += 5;
     _hud.setScore(score);
   }
 
   void _handlePowerUpCollected(PowerUpSprite powerUp) {
-    _audio.playPowerUpSound();
+    _audio?.playPowerUpSound();
 
     switch (powerUp.type) {
       case PowerUpType.star:
@@ -653,7 +715,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
         // Extra life
         lives++;
         _hud.setLives(lives);
-        _audio.playOneUpSound();
+        _audio?.playOneUpSound();
         break;
       case PowerUpType.coinRain:
         // Batch score
@@ -683,13 +745,13 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
   void _onGapMissed(GapSprite gap) {
     _correctStreak = 0;
     _shakeScreen();
-    _audio.playBumpSound();
+    _audio?.playBumpSound();
   }
 
   void _onWrongLetter() {
     _correctStreak = 0;
     _shakeScreen();
-    _audio.playBumpSound();
+    _audio?.playBumpSound();
   }
 
   // ─── Collision detection ──────────────────────────────────────────────
@@ -730,7 +792,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
             _releaseLetter(target.letter);
             score += 15;
             _hud.setScore(score);
-            _audio.playStompSound();
+            _audio?.playStompSound();
             _obstacleTimer = 0.5;
           } else {
             _onObstacleHitMario(target);
@@ -753,7 +815,7 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     _correctStreak = 0;
     // Damage has its own highest-priority audio channel, so the life-loss cue
     // is never replaced by nearby jump, stomp, or coin feedback.
-    _audio.playDamageSound();
+    _audio?.playDamageSound();
     _loseLife();
 
     obstacle.destroy();
@@ -826,8 +888,8 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
   void _triggerGameOver() {
     isGameOver = true;
     _mario.die();
-    _audio.stopBgm();
-    _audio.playGameOverSound();
+    _audio?.stopBgm();
+    _audio?.playGameOverSound();
 
     _gameOverTimer?.cancel();
     _gameOverTimer = Timer(const Duration(seconds: 2), () {
@@ -856,12 +918,91 @@ class TypingMarioGame extends FlameGame with KeyboardEvents {
     }
   }
 
-  // ─── Cleanup ──────────────────────────────────────────────────────────
+  // ─── Test diagnostics / Cleanup ───────────────────────────────────────
+  void _recordSpawn(LetterTarget target) {
+    final name = target.runtimeType.toString();
+    _spawnedByType[name] = (_spawnedByType[name] ?? 0) + 1;
+  }
+
+  /// Host stress-test diagnostics. Not used by the production UI.
+  LetterTarget? get stressObstacleTarget {
+    for (final target in _activeTargets) {
+      if (target is ObstacleSprite &&
+          !target.isConsumed &&
+          target.parent != null) {
+        return target;
+      }
+    }
+    return null;
+  }
+
+  /// Stops generators so a host stress run can exercise the real drain path.
+  void stopSpawningForStress() => _spawningEnabled = false;
+
+  /// Read-only snapshot of the real component tree and target tracking state.
+  GameDiagnostics get stressDiagnostics {
+    final byType = <String, int>{};
+    var componentTotal = 0;
+    void visit(Component component) {
+      componentTotal++;
+      final name = component.runtimeType.toString();
+      byType[name] = (byType[name] ?? 0) + 1;
+      for (final child in component.children) {
+        visit(child);
+      }
+    }
+
+    for (final child in children) {
+      visit(child);
+    }
+    return GameDiagnostics(
+      activeTargets: _activeTargets.length,
+      detachedTracked: _activeTargets
+          .where((target) => target.parent == null)
+          .length,
+      componentTotal: componentTotal,
+      componentsByType: Map.unmodifiable(byType),
+      spawnedByType: Map.unmodifiable(_spawnedByType),
+      usedLetters: _usedLetters.length,
+      terrainSegments: _terrain.segmentCount,
+      coinEffects: _activeCoinEffects,
+      pendingEvents: 0,
+      obstacleMatches: _obstacleMatches,
+    );
+  }
+
   @override
   void onRemove() {
     _gameOverTimer?.cancel();
-    _audio.stopBgm();
-    _audio.dispose();
+    _audio?.stopBgm();
+    _audio?.dispose();
     super.onRemove();
   }
+}
+
+@immutable
+class GameDiagnostics {
+  const GameDiagnostics({
+    required this.activeTargets,
+    required this.detachedTracked,
+    required this.componentTotal,
+    required this.componentsByType,
+    required this.spawnedByType,
+    required this.usedLetters,
+    required this.terrainSegments,
+    required this.coinEffects,
+    required this.pendingEvents,
+    required this.obstacleMatches,
+  });
+
+  final int activeTargets;
+  final int detachedTracked;
+  final int componentTotal;
+  final Map<String, int> componentsByType;
+  final Map<String, int> spawnedByType;
+  final int usedLetters;
+  final int terrainSegments;
+  final int coinEffects;
+  final int pendingEvents;
+  final int obstacleMatches;
 }

@@ -21,7 +21,7 @@ class TerrainSystem {
   final List<TerrainSegment> _segments = [];
   final double baseGroundY; // default ground Y (center of variation)
   final double screenHeight;
-  final Random _rng = Random();
+  final Random _rng;
 
   // Height variation range from baseGroundY
   static const double _maxUpOffset = -100.0; // higher ground = smaller Y
@@ -35,7 +35,10 @@ class TerrainSystem {
   TerrainSystem({
     required this.baseGroundY,
     required this.screenHeight,
-  });
+    Random? random,
+  }) : _rng = random ?? Random();
+
+  int get segmentCount => _segments.length;
 
   /// Initialize terrain with a wide flat starting area.
   void init(double screenWidth) {

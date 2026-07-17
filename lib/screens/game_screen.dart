@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flame/game.dart';
 import '../game/typing_mario_game.dart';
 import '../widgets/game_controls.dart';
+import '../utils/quit_coordinator.dart';
 
 class GameScreen extends StatefulWidget {
   const GameScreen({super.key, this.game});
@@ -17,6 +18,12 @@ class GameScreen extends StatefulWidget {
 class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   TypingMarioGame? _game;
   bool _gameCreated = false;
+  final QuitCoordinator _quitCoordinator = QuitCoordinator();
+
+  Future<void> _quit() => _quitCoordinator.quit(
+    cleanup: () => _game?.prepareToQuit(),
+    exit: SystemNavigator.pop,
+  );
 
   @override
   void initState() {
@@ -105,7 +112,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
             child: SafeArea(
               top: false,
               right: false,
-              child: QuitButton(onQuit: SystemNavigator.pop),
+              child: QuitButton(onQuit: _quit),
             ),
           ),
         ],

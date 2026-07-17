@@ -12,11 +12,10 @@ class AudioManager {
   factory AudioManager() => _instance;
   AudioManager._internal();
 
-  /// Critical gameplay effects must use MediaPlayer on Android. SoundPool
-  /// (PlayerMode.lowLatency) does not emit completion events, so a FIFO channel
-  /// driven by onPlayerComplete would play its first request and remain busy
-  /// forever, silently retaining every later coin/stomp/damage request.
-  static const PlayerMode criticalEffectPlayerMode = PlayerMode.mediaPlayer;
+  /// Gameplay effects use preloaded SoundPool players. They are dispatched
+  /// immediately instead of waiting in a completion-driven FIFO (SoundPool does
+  /// not emit completion events on Android).
+  static const PlayerMode criticalEffectPlayerMode = PlayerMode.lowLatency;
 
   static const Map<String, String> letterWords = {
     'A': 'Apple',
@@ -72,34 +71,21 @@ class AudioManager {
     2,
     (index) => AudioPlayer(playerId: 'voice-$index'),
   );
-  final _CriticalEffectChannel _coinChannel = _CriticalEffectChannel('coin');
-  final _CriticalEffectChannel _stompChannel = _CriticalEffectChannel('stomp');
-  final _CriticalEffectChannel _damageChannel = _CriticalEffectChannel(
-    'damage',
+  late final _AudioPlayersEffectAdapter _effectAdapter =
+      _AudioPlayersEffectAdapter();
+  late BoundedEffectEngine _effectEngine = BoundedEffectEngine(
+    adapter: _effectAdapter,
   );
-  // Only low-value spam cues are bounded. Reward, stomp, damage, life-loss,
-  // power-up, and game-over channels remain lossless FIFOs.
-  final _CriticalEffectChannel _jumpChannel = _CriticalEffectChannel(
-    'jump',
-    maxPending: 1,
-    coalescePendingDuplicates: true,
-  );
-  final _CriticalEffectChannel _bumpChannel = _CriticalEffectChannel(
-    'bump',
-    maxPending: 1,
-    coalescePendingDuplicates: true,
-  );
-  final _CriticalEffectChannel _powerUpChannel = _CriticalEffectChannel(
-    'powerup',
-  );
-  final _CriticalEffectChannel _oneUpChannel = _CriticalEffectChannel('oneup');
-  final _CriticalEffectChannel _gameOverChannel = _CriticalEffectChannel(
-    'gameover',
-  );
+  Future<void> _effectLifecycle = Future<void>.value();
+  bool _effectsTerminal = false;
 
   bool _initialized = false;
   bool _bgmShouldPlay = false;
-  bool _bgmStarting = false;
+  late final DesiredPlaybackController _bgmController =
+      DesiredPlaybackController(_AudioPlayersBgmAdapter(_bgmPlayer));
+  final BgmRecoveryGate _bgmRecoveryGate = BgmRecoveryGate();
+  final TerminalAudioLifecycleCoordinator _terminalLifecycle =
+      TerminalAudioLifecycleCoordinator();
   int _nextVoicePlayer = 0;
   DateTime? _lastVoiceAt;
 
@@ -114,14 +100,7 @@ class AudioManager {
       for (final player in _voicePlayers) {
         await _configurePlayer(player, PlayerMode.lowLatency);
       }
-      await _coinChannel.init();
-      await _stompChannel.init();
-      await _damageChannel.init();
-      await _jumpChannel.init();
-      await _bumpChannel.init();
-      await _powerUpChannel.init();
-      await _oneUpChannel.init();
-      await _gameOverChannel.init();
+      await _effectAdapter.init();
       // Load only the clips used at runtime. Word clips are intentionally not
       // queued: each monster now announces precisely one letter.
       await AudioCache.instance.loadAll([
@@ -132,6 +111,7 @@ class AudioManager {
         ),
       ]);
       _initialized = true;
+      if (_bgmShouldPlay) _bgmController.setDesired(true);
     } catch (error, stackTrace) {
       // Keep initialization retryable instead of silently dropping every later
       // event behind a false "initialized" flag.
@@ -163,18 +143,23 @@ class AudioManager {
     _playVoice('audio/letters/${normalized.toLowerCase()}.wav');
   }
 
-  /// Every gameplay cue has an isolated FIFO channel. No cue can replace
-  /// another cue, and rapid identical events are retained until played.
-  void playCoinSound() => _coinChannel.play('audio/sfx/coin.wav');
-  void playStompSound() => _stompChannel.play('audio/sfx/stomp.wav');
-  void playDamageSound() =>
-      _damageChannel.play('audio/sfx/bump.wav', volume: 0.8);
+  /// Each cue has a small pool of preloaded players, so current game events
+  /// start immediately instead of becoming delayed stale FIFO entries.
+  void playCoinSound() => _effectEngine.play(EffectKind.coin);
+  void playStompSound() => _effectEngine.play(EffectKind.stomp);
+  void playDamageSound() => _effectEngine.play(EffectKind.damage, volume: 0.8);
 
-  void playJumpSound() => _jumpChannel.play('audio/sfx/jump.wav');
-  void playBumpSound() => _bumpChannel.play('audio/sfx/bump.wav', volume: 0.45);
-  void playPowerUpSound() => _powerUpChannel.play('audio/sfx/powerup.wav');
-  void playOneUpSound() => _oneUpChannel.play('audio/sfx/oneup.wav');
-  void playGameOverSound() => _gameOverChannel.play('audio/sfx/gameover.wav');
+  void playJumpSound() => _effectEngine.play(EffectKind.jump);
+  void playBumpSound() => _effectEngine.play(EffectKind.bump, volume: 0.45);
+  void playPowerUpSound() => _effectEngine.play(EffectKind.powerUp);
+  void playOneUpSound() => _effectEngine.play(EffectKind.oneUp);
+  void playGameOverSound() {
+    _bgmShouldPlay = false;
+    _bgmController.setDesired(false);
+    _effectEngine.playGameOver();
+  }
+
+  AudioDiagnostics get effectDiagnostics => _effectEngine.diagnostics;
   void playEncouragement() {}
 
   void _playVoice(String asset) {
@@ -197,176 +182,155 @@ class AudioManager {
 
   void startBgm() {
     _bgmShouldPlay = true;
-    unawaited(_startBgm());
+    _bgmRecoveryGate.beginExplicitAttempt();
+    if (_initialized) _bgmController.requestPlaying();
   }
 
-  Future<void> _startBgm() async {
-    if (!_initialized || !_bgmShouldPlay || _bgmStarting) return;
-    _bgmStarting = true;
-    try {
-      // Resume preserves the loop position after pause. Fresh sessions start
-      // from the bundled source, which loops natively without Dart callbacks.
-      if (_bgmPlayer.state == PlayerState.paused) {
-        await _bgmPlayer.resume();
-      } else if (_bgmPlayer.state != PlayerState.playing) {
-        await _bgmPlayer.play(AssetSource('audio/sfx/bgm.wav'));
-      }
-    } catch (error) {
-      debugPrint('BGM playback failed: $error');
-    } finally {
-      _bgmStarting = false;
-    }
-  }
-
-  /// Called at a low frequency from the game loop only to repair real media
-  /// interruptions; normal looping happens natively without Dart restarts.
   void ensureBgmPlaying() {
-    if (_bgmShouldPlay && _bgmPlayer.state != PlayerState.playing) {
-      unawaited(_startBgm());
+    if (!_initialized || !_bgmShouldPlay) return;
+    if (_bgmPlayer.state == PlayerState.playing) {
+      _bgmRecoveryGate.recordPlaying();
+      return;
+    }
+    if (_bgmRecoveryGate.tryWatchdogRecovery()) {
+      _bgmController.retryPlaying();
     }
   }
 
   void pauseBgm() {
     _bgmShouldPlay = false;
-    unawaited(_bgmPlayer.pause());
-    _stopShortAudio();
+    _bgmController.setDesired(false);
+    unawaited(_resetShortAudio());
   }
 
-  void resumeBgm() {
-    _bgmShouldPlay = true;
-    unawaited(_startBgm());
-  }
+  void resumeBgm() => startBgm();
 
   void stopBgm() {
     _bgmShouldPlay = false;
-    unawaited(_bgmPlayer.stop());
+    _bgmController.setDesired(false);
   }
 
-  void _stopShortAudio() {
-    for (final player in _voicePlayers) {
-      unawaited(player.stop());
-    }
-    _coinChannel.stop();
-    _stompChannel.stop();
-    _damageChannel.stop();
-    _jumpChannel.stop();
-    _bumpChannel.stop();
-    _powerUpChannel.stop();
-    _oneUpChannel.stop();
-    _gameOverChannel.stop();
+  Future<void> _resetShortAudio() {
+    if (_effectsTerminal) return _effectLifecycle;
+    final oldEngine = _effectEngine;
+    return _effectLifecycle = _effectLifecycle.then((_) async {
+      await Future.wait([
+        ..._voicePlayers.map((player) => player.stop()),
+        oldEngine.shutdown(),
+      ]);
+      if (!_effectsTerminal && identical(_effectEngine, oldEngine)) {
+        _effectEngine = BoundedEffectEngine(adapter: _effectAdapter);
+      }
+    });
   }
 
-  /// Reset a game session while retaining native player objects.
+  /// Reset a game session while retaining the fixed native player set.
   void dispose() {
     stopBgm();
-    _stopShortAudio();
+    unawaited(_resetShortAudio());
+  }
+
+  /// Terminal barrier: unlike a session reset this never creates a new engine.
+  Future<void> stopAllAudio() => _terminalLifecycle.shutdown(_stopAllAudioOnce);
+
+  Future<void> _stopAllAudioOnce() async {
+    _bgmShouldPlay = false;
+    _effectsTerminal = true;
+    final engine = _effectEngine;
+    final effects = _effectLifecycle = _effectLifecycle.then((_) async {
+      await Future.wait([
+        ..._voicePlayers.map((player) => player.stop()),
+        engine.shutdown(),
+      ]);
+    });
+    await Future.wait([effects, _bgmController.shutdown()]);
   }
 
   Future<void> close() async {
+    await stopAllAudio();
     await _bgmPlayer.dispose();
     for (final player in _voicePlayers) {
       await player.dispose();
     }
-    await _coinChannel.close();
-    await _stompChannel.close();
-    await _damageChannel.close();
-    await _jumpChannel.close();
-    await _bumpChannel.close();
-    await _powerUpChannel.close();
-    await _oneUpChannel.close();
-    await _gameOverChannel.close();
+    await _effectAdapter.close();
     _initialized = false;
   }
 }
 
-class _CriticalEffectChannel {
-  _CriticalEffectChannel(
-    String id, {
-    int? maxPending,
-    bool coalescePendingDuplicates = false,
-  }) : _player = AudioPlayer(playerId: 'critical-$id'),
-       _queue = CriticalAudioQueue<_EffectRequest>(
-         maxPending: maxPending,
-         coalescePendingDuplicates: coalescePendingDuplicates,
-       ) {
-    _listenForCompletion();
-  }
+class _AudioPlayersEffectAdapter implements EffectPlayerAdapter {
+  static const _assets = <EffectKind, String>{
+    EffectKind.coin: 'audio/sfx/coin.wav',
+    EffectKind.stomp: 'audio/sfx/stomp.wav',
+    EffectKind.powerUp: 'audio/sfx/powerup.wav',
+    EffectKind.oneUp: 'audio/sfx/oneup.wav',
+    EffectKind.damage: 'audio/sfx/bump.wav',
+    EffectKind.jump: 'audio/sfx/jump.wav',
+    EffectKind.bump: 'audio/sfx/bump.wav',
+    EffectKind.gameOver: 'audio/sfx/gameover.wav',
+  };
 
-  final AudioPlayer _player;
-  final CriticalAudioQueue<_EffectRequest> _queue;
-  StreamSubscription<void>? _completionSubscription;
-  Future<void> _operations = Future<void>.value();
-
-  void _listenForCompletion() {
-    _completionSubscription = _player.onPlayerComplete.listen(
-      (_) => _serialize(_advance),
-    );
-  }
+  final List<AudioPlayer> _players = List.generate(
+    defaultEffectSlotKinds.length,
+    (slot) => AudioPlayer(
+      playerId: 'effect-${defaultEffectSlotKinds[slot].name}-$slot',
+    ),
+  );
 
   Future<void> init() async {
-    await _player.setAudioContext(AudioManager._gameAudioContext);
-    await _player.setPlayerMode(AudioManager.criticalEffectPlayerMode);
-    await _player.setReleaseMode(ReleaseMode.stop);
-  }
-
-  void play(String asset, {double volume = 1.0}) {
-    if (!AudioManager()._initialized) return;
-    final request = _EffectRequest(asset, volume);
-    _serialize(() async {
-      final next = _queue.enqueue(request);
-      if (next != null) await _start(next);
-    });
-  }
-
-  Future<void> _start(_EffectRequest request) async {
-    try {
-      await _player.play(AssetSource(request.asset), volume: request.volume);
-    } catch (error) {
-      debugPrint('Critical audio playback failed for ${request.asset}: $error');
-      await _advance();
+    for (var slot = 0; slot < _players.length; slot++) {
+      final player = _players[slot];
+      await player.setAudioContext(AudioManager._gameAudioContext);
+      await player.setPlayerMode(AudioManager.criticalEffectPlayerMode);
+      await player.setReleaseMode(ReleaseMode.stop);
+      await player.setSource(
+        AssetSource(_assets[defaultEffectSlotKinds[slot]]!),
+      );
     }
   }
 
-  Future<void> _advance() async {
-    final next = _queue.complete();
-    if (next != null) await _start(next);
+  AudioPlayer _player(int slot, EffectKind kind) {
+    assert(defaultEffectSlotKinds[slot] == kind);
+    return _players[slot];
   }
 
-  void _serialize(Future<void> Function() operation) {
-    _operations = _operations.then((_) => operation()).catchError((error) {
-      debugPrint('Critical audio channel operation failed: $error');
-    });
+  @override
+  Future<void> stop(int slot, EffectKind kind) async {
+    try {
+      await _player(slot, kind).stop();
+    } catch (error) {
+      debugPrint('Effect stop failed for ${kind.name}: $error');
+    }
   }
 
-  void stop() {
-    // Canceling the old session's listener before stop makes a late native
-    // completion incapable of advancing requests enqueued for the new session.
-    // Stop/reset/relisten and all play calls share this operation chain.
-    _serialize(() async {
-      await _completionSubscription?.cancel();
-      _completionSubscription = null;
-      await _player.stop();
-      _queue.reset();
-      _listenForCompletion();
-    });
+  @override
+  Future<void> resume(int slot, EffectKind kind, double volume) async {
+    final player = _player(slot, kind);
+    try {
+      await player.setVolume(volume);
+      await player.resume();
+    } catch (error) {
+      debugPrint('Effect playback failed for ${kind.name}: $error');
+    }
   }
 
   Future<void> close() async {
-    await _operations;
-    await _completionSubscription?.cancel();
-    await _player.dispose();
+    await Future.wait(_players.map((player) => player.dispose()));
   }
 }
 
-class _EffectRequest {
-  const _EffectRequest(this.asset, this.volume);
-  final String asset;
-  final double volume;
+class _AudioPlayersBgmAdapter implements DesiredPlaybackAdapter {
+  _AudioPlayersBgmAdapter(this.player);
+  final AudioPlayer player;
 
   @override
-  bool operator ==(Object other) =>
-      other is _EffectRequest && other.asset == asset && other.volume == volume;
+  Future<void> play() async {
+    if (player.state == PlayerState.paused) {
+      await player.resume();
+    } else if (player.state != PlayerState.playing) {
+      await player.play(AssetSource('audio/sfx/bgm.wav'));
+    }
+  }
 
   @override
-  int get hashCode => Object.hash(asset, volume);
+  Future<void> stop() => player.stop();
 }

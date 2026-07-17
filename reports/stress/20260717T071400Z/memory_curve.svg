@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="360" viewBox="0 0 900 360">
+<rect width="900" height="360" fill="white"/>
+<text x="450" y="20" text-anchor="middle" font-family="sans-serif" font-size="16">700-point stress run RSS</text>
+<line x1="70.0" y1="305" x2="875" y2="305" stroke="#333"/>
+<line x1="70.0" y1="30.0" x2="70.0" y2="305" stroke="#333"/>
+<polyline points="70.00,305.00 127.50,98.75 185.00,98.75 242.50,87.29 300.00,87.29 357.50,75.83 415.00,75.83 472.50,64.38 530.00,64.38 587.50,64.38 645.00,52.92 702.50,52.92 760.00,41.46 817.50,41.46 875.00,30.00" fill="none" stroke="#1565c0" stroke-width="3"/>
+<text x="450" y="345" text-anchor="middle" font-family="sans-serif">score (0-700)</text>
+<text x="18" y="180" transform="rotate(-90 18 180)" text-anchor="middle" font-family="sans-serif">RSS MiB (162.23-162.61)</text>
+</svg>
